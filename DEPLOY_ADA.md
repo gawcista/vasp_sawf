@@ -64,7 +64,7 @@ python -m pip install --require-hashes -r requirements.lock &&
 python -m pip check
 ```
 
-Stop if environment creation, activation, or the interpreter check fails. Subsequent sessions and batch scripts must activate `.venv-py313/bin/activate` when using this recovery environment. No package version or hash needs to change for this error. All 76 pinned versions and hashes were checked against official PyPI release metadata, and the 0.8.0 wheel was downloaded and hash-verified independently. These checks establish artifact availability, not a completed installation on ADA.
+Stop if environment creation, activation, or the interpreter check fails. Subsequent sessions and batch scripts must activate `.venv-py313/bin/activate` or explicitly invoke `.venv-py313/bin/python` when using this recovery environment. No package version or hash needs to change for this error. All 76 pinned versions and hashes were checked against official PyPI release metadata, and the 0.8.0 wheel was downloaded and hash-verified independently. These checks establish artifact availability, not a completed installation on ADA.
 
 ## 2. Check the installation
 
@@ -112,7 +112,54 @@ Required inputs are one consistent set of `.win/.mmn/.amn/.eig`, the OUTCAR from
 
 The only outputs are `bloch.npz` and `report.json`. To run step 2 locally, download the complete `symmetry` directory and retain the original interface files with identical contents. WAVECAR and UNK do not need to be downloaded.
 
-The program currently uses one Python process with NumPy/SciPy numerical kernels. Do not start the same extraction command on multiple MPI ranks; GPUs are not required. Begin with the BLAS thread settings used in small-system validation, then measure scaling separately. Large-system memory and wall time must be estimated from actual NG/NK/NB and calibrated with small tests. This guide provides no uncalibrated Slurm resource values, and the program does not submit jobs automatically.
+The program currently uses one Python process with NumPy/SciPy numerical kernels. Do not start the same extraction command on multiple MPI ranks; GPUs are not required. Begin with the BLAS thread settings used in small-system validation, then measure scaling separately. Large-system memory and wall time must be estimated from actual NG/NK/NB and calibrated with small tests. The program does not submit jobs automatically.
+
+### ADA batch template and the current tSnS limitation
+
+[extract_ada.sbatch](extract_ada.sbatch) uses the following paths:
+
+| Purpose | Path |
+| --- | --- |
+| Source checkout | `$HOME/.src/vasp_sawf` |
+| Python environment | `$HOME/.src/vasp_sawf/.venv-py313` |
+| Read-only interface inputs | `/ptmp/tSnS/scdm661` |
+| Job working directory and logs | `/ptmp/tSnS/sawf661` |
+| New extraction output | `/ptmp/tSnS/sawf661/symmetry` |
+
+The Python module must match the module used to create the environment. The template uses `python-waterboa/2025.06`; confirm its availability and complete installation first. It intentionally uses the Python 3.13 recovery environment, not the old Python 3.6 `.venv`.
+
+**The current tSnS structure is not supported by the extraction algorithm yet.** A lightweight local check on 2026-09-28, using the actual WIN structure and fixed IrRep 2.6.3, found the candidate structural grey group `P2_11'`, with four operations. The nontrivial unitary operation has fractional rotation `diag(-1, 1, -1)` and translation `(0, 0.5, 0.3371566930075367)`. Its square is translation by `(0, 1, 0)`: the half translation along b cannot be removed by shifting the origin. Constructing a candidate grey group from structure does not establish the magnetic state of the calculation.
+
+`_validate_grey_group` and `build_symmetry_maps` currently reject nonzero spatial translations. Simply removing those checks would be incorrect: MMN transport, independent coefficient transformations, and group-composition checks need the corresponding translation phases. The SAWF verification must use the same conventions. The screw has no individually fixed center modulo lattice translations, so the current single-center target and initial-guess alignment also require extension to multiple symmetry-related centers. The specific centers and local representation remain undetermined. These are implementation limits; the accepted SrVO3 numerical workflow is unchanged. No target Wannier representation is inferred from the tSnS SCDM AMN.
+
+The template therefore performs the existing structural checks before coefficient I/O. For the local tSnS structure it is expected to stop at that check. The check reads only 128 logical WAVECAR header bytes plus the small interface files; it does not read coefficients. Do not submit a full tSnS extraction expecting it to succeed until translation support is implemented and independently tested. The local historical OUTCAR also has `LWAVE=F`; the contents of the remote directory have not been inspected. The actual remote WAVECAR/OUTCAR must meet the documented interface-output requirements; do not assume that an earlier SCF WAVECAR is the interface output.
+
+After these prerequisites have been resolved, submission would be:
+
+```bash
+cd "$HOME/.src/vasp_sawf"
+git pull --ff-only
+mkdir -p /ptmp/tSnS/sawf661
+sbatch extract_ada.sbatch
+```
+
+Update source only when the checkout is clean and no job uses it. The working directory must exist before `sbatch`, because Slurm opens its logs before executing the script. Logs append to fixed `extract.out` and `extract.err` files; extraction refuses to overwrite the existing `symmetry` directory. No input files are copied or modified. If moving the template to another system, change its input and working-directory paths. `#SBATCH` directives do not expand `$HOME` or shell variables; this is why the source path is set in the shell body and the working directory is literal. See the [Slurm sbatch manual](https://slurm.schedmd.com/sbatch.html).
+
+The template requests one node, one process, one CPU, and 64 GiB on `p.large`, without MPI, GPUs, or an exclusive node reservation. ADA's `p.large` nodes have 2 TB each and can be shared; an explicit `--mem` is needed to avoid the default allocation of all memory. The 24-hour setting is the documented partition time limit, not a runtime estimate. See the [official ADA partition documentation](https://docs.mpcdf.mpg.de/doc/computing/clusters/systems/MPSD_PKS_ADA.html).
+
+**Resource values are provisional trial limits, not measured tSnS requirements.** The local OUTCAR reports 24 stored k points, 4320 original bands, and at most 1,372,860 "plane waves". WIN selects bands 3633-3640 on the full 6x6x1 mesh. Let `G_k` count G vectors for one spinor component. The reader retains `complex64` coefficients for the eight selected bands, and extraction also retains a `complex128` copy; together these occupy `48 * 8 * sum(G_k)` bytes. The shared G tables and kinetic energies add approximately `56 * sum(G_k)` bytes. This is not a streaming implementation.
+
+The SOC meaning of OUTCAR's plane-wave count must be resolved using the actual WAVECAR k-record coefficient count (`C_k = 2 G_k`). Conservatively treating the reported maximum as a single-component G count gives about 11.78 GiB for both coefficient copies and 1.72 GiB for G tables and kinetic energies. If the printed count already includes both spinor components, these estimates halve. Temporary transforms, Python G-vector dictionaries, least-squares work arrays, and library overhead add to this baseline. Thus 64 GiB is a trial budget with workspace headroom, not evidence that the measured peak fits it. A 1.1 TB file does not imply 1.1 TB resident memory: unselected band coefficient records are not read.
+
+Serial G enumeration and mapping can dominate runtime; allocating 72 MPI ranks would launch duplicate work, and more BLAS threads do not parallelize those Python loops. After the symmetry extension, calibrate one stored k point with all eight bands and all G vectors on allocated resources before attempting the full extraction; such a calibration is not a replacement or downsampling of the required 6x6x1 production mesh. No calibration mode or parallel algorithm is added by this batch template.
+
+`/usr/bin/time -v` records extraction wall time and peak RSS in `extract.err`; `symmetry/report.json` records the process peak RSS, elapsed time, and logical record-read ledger. Its `read_bytes` excludes the extractor's own 128-byte header preflight (recorded separately as `header_preflight_read_bytes`) and the additional 128-byte batch preflight. Slurm provides an independent accounting view after a job:
+
+```bash
+sacct -j JOB_ID --format=JobID,State,Elapsed,MaxRSS,AllocCPUS
+```
+
+Inspect the individual `srun` steps as well as the job row. Logical bytes read by the program are not identical to physical filesystem I/O. Neither tSnS peak memory nor extraction time has been measured, and this template has not been run on ADA.
 
 ## 4. Run SAWF
 

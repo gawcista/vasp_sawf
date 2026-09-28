@@ -15,24 +15,56 @@ git rev-parse HEAD
 find-module python-waterboa
 ```
 
-ADA uses explicitly versioned environment modules. MPCDF's `python-waterboa/2025.06` is based on CPython 3.13 and is a suitable first candidate to check. Availability must be confirmed with `find-module` on ADA. If that version is available:
+ADA uses explicitly versioned environment modules. MPCDF's `python-waterboa/2025.06` is based on CPython 3.13 and is a suitable first candidate to check. Availability must be confirmed with `find-module` on ADA. If a virtual environment is already active, run `deactivate` before loading the module. Loading a module does not replace the interpreter of an existing virtual environment. If that module version is available:
 
 ```bash
-module load python-waterboa/2025.06
-python -c 'import sys; print(sys.version); assert sys.version_info[:2] == (3, 13)'
-getconf GNU_LIBC_VERSION
-python -m venv .venv
-source .venv/bin/activate
-export PYTHONNOUSERSITE=1
-python -m pip install --require-hashes -r requirements.lock
+module load python-waterboa/2025.06 &&
+python3.13 -c 'import sys; print(sys.version); assert sys.version_info[:2] == (3, 13)' &&
+getconf GNU_LIBC_VERSION &&
+test ! -e .venv && test ! -L .venv &&
+python3.13 -m venv .venv &&
+source .venv/bin/activate &&
+export PYTHONNOUSERSITE=1 &&
+python -c 'import sys; print(sys.version); print(sys.executable); assert sys.version_info[:2] == (3, 13) and sys.prefix != sys.base_prefix' &&
+python -m pip install --require-hashes -r requirements.lock &&
 python -m pip check
 ```
 
-Dependencies are installed into the new `.venv`, without `--user` or `--system-site-packages`. If `.venv` already exists, identify its purpose before recreating it. Include the module load and environment activation in the actual job script; running them once in a login shell does not initialize every batch job.
+Stop if the module load or either interpreter check fails. Dependencies are installed into the new `.venv`, without `--user` or `--system-site-packages`. If `.venv` already exists, identify its purpose before recreating it; the recovery instructions below preserve an existing environment. Include the module load and environment activation in the actual job script; running them once in a login shell does not initialize every batch job.
 
 `requirements.lock` pins runtime package versions and the SHA256 hashes of the artifacts downloaded locally. It is not a cross-platform lock: binary artifacts must match the Python ABI, CPU architecture, and glibc. For example, the SciPy artifact carries manylinux 2.27/2.28 tags. If pip reports no compatible artifact or a hash mismatch, retain the error and check these conditions. Do not bypass it by removing hashes or upgrading dependencies. `pylatexenc` is a source distribution, and its temporary build tools are not included in the lock; a fully closed, reproducible installation has not yet been demonstrated.
 
 Module references: [MPCDF environment modules](https://docs.mpcdf.mpg.de/faq/hpc_software.html), [ADA documentation](https://docs.mpcdf.mpg.de/doc/computing/clusters/systems/MPSD_PKS_ADA.html), and the [Python 3.13 stack announcement](https://docs.mpcdf.mpg.de/bnb/pdf/bits_and_bytes_issue_219.pdf). Compiler, MPI, or GPU settings in unrelated cluster examples are not requirements of this program.
+
+### Recover from a virtual environment created with system Python
+
+An ADA installation attempt used Python 3.6.15 inside `.venv`. Pip reached PyPI, but its verbose output rejected every `annotated-types` release because of `Requires-Python`. The locked version 0.8.0 requires Python >=3.10, while this project's full artifact lock targets CPython 3.13. The final `from versions: none` message did not mean that the release was absent from PyPI.
+
+Recreate the environment using Python 3.13, rather than upgrading pip inside the Python 3.6 environment or changing package pins. A virtual environment uses the base interpreter with which it was created; see the [Python venv documentation](https://docs.python.org/3.13/library/venv.html).
+
+From the repository directory, with the old environment active, first run:
+
+```bash
+deactivate
+module load python-waterboa/2025.06
+python3.13 --version
+```
+
+Continue only if the module loads and the interpreter reports Python 3.13.x. If the module is unavailable, use `find-module python-waterboa` to identify an available Python 3.13 module; do not fall back to system `python3`.
+
+Use a new `.venv-py313` directory, leaving the old `.venv` untouched. If that new path already exists, inspect it instead of recreating it:
+
+```bash
+test ! -e .venv-py313 && test ! -L .venv-py313 &&
+python3.13 -m venv .venv-py313 &&
+source .venv-py313/bin/activate &&
+export PYTHONNOUSERSITE=1 &&
+python -c 'import sys; print(sys.version); print(sys.executable); assert sys.version_info[:2] == (3, 13) and sys.prefix != sys.base_prefix' &&
+python -m pip install --require-hashes -r requirements.lock &&
+python -m pip check
+```
+
+Stop if environment creation, activation, or the interpreter check fails. Subsequent sessions and batch scripts must activate `.venv-py313/bin/activate` when using this recovery environment. No package version or hash needs to change for this error. All 76 pinned versions and hashes were checked against official PyPI release metadata, and the 0.8.0 wheel was downloaded and hash-verified independently. These checks establish artifact availability, not a completed installation on ADA.
 
 ## 2. Check the installation
 

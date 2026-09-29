@@ -2,7 +2,7 @@
 """Plot DFT, ordinary Wannier, and SAWF bands separately from bands.npz.
 
 Edit the parameters below, then run:
-    python plot_bands.py bands.npz --output figures
+    sawf-plot-bands bands.npz --output figures
 
 Energy arrays are in eV before reference subtraction; segment_slices use half-open intervals.
 This script only plots data; it neither recomputes nor validates the model.

@@ -15,7 +15,7 @@ def _case():
 
 
 def test_exact_record_association_is_reversible_without_changing_g_labels():
-    from core.wavecar import repair_vasp_g_association
+    from vasp_sawf.wavecar import repair_vasp_g_association
 
     ig, raw, wf = _case()
     ig[:, 3] = [2, 3, 0, 4, 1]
@@ -34,7 +34,7 @@ def test_exact_record_association_is_reversible_without_changing_g_labels():
 
 
 def test_fft_order_handles_zero_axes_and_asymmetric_extrema():
-    from core.wavecar import repair_vasp_g_association
+    from vasp_sawf.wavecar import repair_vasp_g_association
 
     record_g = np.array([[0, 0, 0], [2, 0, 0], [-3, 0, 0], [-1, 0, 0],
                          [0, 1, 0], [-3, 1, 0], [2, -2, 0], [-1, -2, 0],
@@ -48,7 +48,7 @@ def test_fft_order_handles_zero_axes_and_asymmetric_extrema():
 
 
 def test_skew_reciprocal_non_gamma_enumeration_has_fft_record_order():
-    from core.wavecar import repair_vasp_g_association
+    from vasp_sawf.wavecar import repair_vasp_g_association
 
     reciprocal = np.array([[1.0, 0.2, 0.1], [0.0, 1.3, 0.3], [0.1, 0.0, 0.9]])
     k = np.array([0.25, -0.2, 0.1])
@@ -72,7 +72,7 @@ def test_skew_reciprocal_non_gamma_enumeration_has_fft_record_order():
 
 def test_new_kpoint_preserves_weight_and_does_not_copy_stale_characters():
     from irrep.kpoint import Kpoint
-    from core.wavecar import adapt_irrep_kpoint
+    from vasp_sawf.wavecar import adapt_irrep_kpoint
 
     ig, raw, wf = _case()
     kp = Kpoint(ik=3, num_bands=2, RecLattice=np.eye(3), spinor=True,
@@ -90,7 +90,7 @@ def test_new_kpoint_preserves_weight_and_does_not_copy_stale_characters():
 @pytest.mark.parametrize('problem', ['duplicate_g', 'float_g', 'duplicate_record',
                                      'truncated', 'wrong_spinor', 'precision', 'rtag', 'nonfinite'])
 def test_invalid_or_unsupported_input_is_rejected(problem):
-    from core.wavecar import GAssociationError, repair_vasp_g_association
+    from vasp_sawf.wavecar import GAssociationError, repair_vasp_g_association
 
     ig, raw, wf = _case()
     count, rtag = 10, 45200
@@ -116,13 +116,13 @@ def test_invalid_or_unsupported_input_is_rejected(problem):
 
 
 def test_export_cli_refuses_protected_output_before_reading_wavecar(tmp_path):
-    worktree = Path(__file__).resolve().parents[1]
     output = tmp_path / 'protected-new'
-    environment = dict(os.environ, PYTHONPATH=str(worktree), PYTHONDONTWRITEBYTECODE='1')
-    result = subprocess.run([sys.executable, str(worktree / 'extract_symmetry.py'),
+    environment = dict(os.environ, PYTHONDONTWRITEBYTECODE='1')
+    environment.pop('PYTHONPATH', None)
+    result = subprocess.run([sys.executable, '-I', '-m', 'vasp_sawf.extract_symmetry',
                              '--seed', str(tmp_path/'wannier90'), '--wavecar', str(tmp_path/'WAVECAR'),
                              '--outcar', str(tmp_path/'OUTCAR'), '--output', str(output)],
-                            env=environment, text=True, capture_output=True)
+                            cwd=tmp_path, env=environment, text=True, capture_output=True)
     assert result.returncode != 0
     assert 'outside the original input directory' in result.stderr
     assert not output.exists()
@@ -135,7 +135,7 @@ def test_real_srvo3_twenty_kpoints_match_independent_pymatgen():
         pytest.skip('SAWF_SRVO3_SOC was not explicitly set for the small-system fixture')
     from irrep.bandstructure import BandStructure
     from pymatgen.io.vasp.outputs import Wavecar
-    from core.wavecar import adapt_irrep_kpoint
+    from vasp_sawf.wavecar import adapt_irrep_kpoint
 
     fixture = Path(fixture)
     wavecar = fixture / 'WAVECAR'

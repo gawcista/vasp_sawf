@@ -22,7 +22,7 @@ def _package(tmp_path):
 
 
 def test_package_rejects_changed_matrix_even_if_it_remains_unitary(tmp_path):
-    from core.localize import _read_bound_package
+    from vasp_sawf.localize import _read_bound_package
     folder, _ = _package(tmp_path)
     np.savez(folder / 'bloch.npz', d=-np.ones((1, 1, 1, 1)))
     with pytest.raises(ValueError, match='SHA256'):
@@ -31,7 +31,7 @@ def test_package_rejects_changed_matrix_even_if_it_remains_unitary(tmp_path):
 
 @pytest.mark.parametrize('change', ['not_ready', 'different_input', 'nonfinite'])
 def test_package_rejects_unready_foreign_or_nonfinite_data(tmp_path, change):
-    from core.localize import _read_bound_package
+    from vasp_sawf.localize import _read_bound_package
     folder, report = _package(tmp_path)
     if change == 'not_ready':
         report['sawf_ready'] = False
@@ -48,13 +48,13 @@ def test_package_rejects_unready_foreign_or_nonfinite_data(tmp_path, change):
 
 @pytest.mark.parametrize('value', [np.nan, np.inf, 1.0001e-6])
 def test_numerical_gate_rejects_invalid_residuals(value):
-    from core.localize import _gate
+    from vasp_sawf.localize import _gate
     with pytest.raises(ValueError):
         _gate({}, 'test', value)
 
 
 def test_unreviewed_trial_package_cannot_inherit_this_decision(tmp_path):
-    from core.localize import _read_bound_package
+    from vasp_sawf.localize import _read_bound_package
     folder, report = _package(tmp_path)
     report.update(status='numerical_trial', sawf_ready=False, numerical_checks_passed=True,
                   physical_acceptance_status='pending_coefficient_closure')
@@ -66,7 +66,7 @@ def test_unreviewed_trial_package_cannot_inherit_this_decision(tmp_path):
 
 @pytest.mark.parametrize('alteration', ['pending', 'false_acceptance', 'nan', 'failed_checks'])
 def test_ready_flags_cannot_replace_actual_acceptance(tmp_path, alteration):
-    from core.localize import _read_bound_package
+    from vasp_sawf.localize import _read_bound_package
     folder, report = _package(tmp_path)
     if alteration == 'pending':
         report['physical_acceptance_status'] = 'pending_coefficient_closure'
@@ -85,8 +85,8 @@ def test_ready_flags_cannot_replace_actual_acceptance(tmp_path, alteration):
 
 @pytest.mark.real_data
 def test_reviewed_real_legacy_package_loads_without_override_and_is_not_rewritten():
-    from core.inputs import read_inputs
-    from core.localize import _read_bound_package
+    from vasp_sawf.inputs import read_inputs
+    from vasp_sawf.localize import _read_bound_package
     folder, seed = os.environ.get('SAWF_SRVO3_SYMMETRY'), os.environ.get('SAWF_SRVO3_SEED')
     if not folder or not seed:
         pytest.skip('The reviewed SrVO3 symmetry package and original interfaces were not specified')
@@ -105,8 +105,8 @@ def test_reviewed_real_legacy_package_loads_without_override_and_is_not_rewritte
 @pytest.mark.real_data
 @pytest.mark.parametrize('alteration', ['failed_checks','greater_residual','substituted_payload'])
 def test_legacy_acceptance_cannot_cover_altered_evidence(tmp_path, alteration):
-    from core.inputs import read_inputs
-    from core.localize import _read_bound_package
+    from vasp_sawf.inputs import read_inputs
+    from vasp_sawf.localize import _read_bound_package
     folder, seed = os.environ.get('SAWF_SRVO3_SYMMETRY'), os.environ.get('SAWF_SRVO3_SEED')
     if not folder or not seed:
         pytest.skip('The reviewed SrVO3 symmetry package and original interfaces were not specified')
@@ -127,7 +127,7 @@ def test_legacy_acceptance_cannot_cover_altered_evidence(tmp_path, alteration):
 
 
 def test_ordinary_initialization_needs_only_existing_interface_matrices():
-    from core.localize import _ordinary_initial_gauge
+    from vasp_sawf.localize import _ordinary_initial_gauge
     from test_sawf import _data
     data = _data()
     before = data.amn.data[0].copy()
@@ -140,7 +140,7 @@ def test_ordinary_initialization_needs_only_existing_interface_matrices():
 
 
 def test_ordinary_initialization_rejects_exhausted_iteration_budget():
-    from core.localize import _ordinary_initial_gauge
+    from vasp_sawf.localize import _ordinary_initial_gauge
     from test_sawf import _data
     with pytest.raises(ValueError, match='converge'):
         _ordinary_initial_gauge(_data(), num_iter=1)

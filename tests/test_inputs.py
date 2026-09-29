@@ -74,7 +74,7 @@ def seed(tmp_path):
 
 
 def read_inputs(*args, **kwargs):
-    from core.inputs import read_inputs as read
+    from vasp_sawf.inputs import read_inputs as read
     return read(*args, **kwargs)
 
 

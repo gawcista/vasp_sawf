@@ -2,7 +2,7 @@
 """Redraw symmetry residual plots from an existing comparison.json.
 
 Edit the plotting parameters below, then run:
-    python plot_symmetry.py comparison.json --output figures
+    sawf-plot-symmetry comparison.json --output figures
 
 This script plots existing values without recomputing symmetry or validating the model.
 """

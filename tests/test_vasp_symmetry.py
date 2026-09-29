@@ -24,7 +24,7 @@ _OUTCAR = '''
 
 
 def test_source_map_preserves_output_coordinates_and_records_no_gauge_claim():
-    from core.symmetry import parse_outcar_kpoint_map
+    from vasp_sawf.symmetry import parse_outcar_kpoint_map
 
     result = parse_outcar_kpoint_map(_OUTCAR)
     np.testing.assert_array_equal(result.source_ibz, [0, 1, 1])
@@ -35,7 +35,7 @@ def test_source_map_preserves_output_coordinates_and_records_no_gauge_claim():
 
 
 def test_interface_mapping_tracks_permutation_and_integer_folding():
-    from core.symmetry import parse_outcar_kpoint_map
+    from vasp_sawf.symmetry import parse_outcar_kpoint_map
 
     result = parse_outcar_kpoint_map(_OUTCAR)
     indices, shifts = result.match_interface(np.array([[.75, 0, 0], [0, 0, 0], [.25, 0, 0]]))
@@ -52,14 +52,14 @@ def test_interface_mapping_tracks_permutation_and_integer_folding():
     _OUTCAR.replace('2.000000', '3.000000'),
 ])
 def test_ambiguous_or_inconsistent_outcar_is_rejected(bad):
-    from core.symmetry import VaspSymmetryError, parse_outcar_kpoint_map
+    from vasp_sawf.symmetry import VaspSymmetryError, parse_outcar_kpoint_map
 
     with pytest.raises(VaspSymmetryError):
         parse_outcar_kpoint_map(bad)
 
 
 def test_geometric_candidates_do_not_select_a_wavefunction_operation():
-    from core.symmetry import parse_outcar_kpoint_map
+    from vasp_sawf.symmetry import parse_outcar_kpoint_map
 
     result = parse_outcar_kpoint_map(_OUTCAR)
     rotations = np.array([np.eye(3), -np.eye(3), np.diag([-1, 1, 1])], dtype=int)
@@ -74,8 +74,8 @@ def test_real_srvo3_outcar_matches_interface_and_independent_cubic_group():
     if fixture is None:
         pytest.skip('SAWF_SRVO3_WANNIER was not explicitly set for the small-system fixture')
     import itertools
-    from core.inputs import read_inputs
-    from core.symmetry import parse_outcar_kpoint_map
+    from vasp_sawf.inputs import read_inputs
+    from vasp_sawf.symmetry import parse_outcar_kpoint_map
 
     fixture = Path(fixture)
     result = parse_outcar_kpoint_map((fixture / 'OUTCAR').read_text())
@@ -103,7 +103,7 @@ def test_real_output_order_does_not_determine_actual_rotation():
     if fixture is None:
         pytest.skip('SAWF_SRVO3_WANNIER was not explicitly set for the small-system fixture')
     import itertools
-    from core.symmetry import parse_outcar_kpoint_map
+    from vasp_sawf.symmetry import parse_outcar_kpoint_map
     table = parse_outcar_kpoint_map((Path(fixture) / 'OUTCAR').read_text())
     rotations = np.array([np.eye(3, dtype=int)[list(p)] * np.array(s)[:, None]
                           for p in itertools.permutations(range(3))

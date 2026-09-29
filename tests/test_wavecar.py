@@ -45,7 +45,7 @@ def _write_wavecar(tmp_path, *, rtag=45200, nb=4, recl=2048):
 
 
 def test_selected_records_keep_exact_coefficients_order_and_bounded_read_ledger(tmp_path):
-    from core.wavecar import read_selected_wavecar
+    from vasp_sawf.wavecar import read_selected_wavecar
 
     path, lattice, refs = _write_wavecar(tmp_path)
     result = read_selected_wavecar(path, bands_1based=[4, 2], kpoints_1based=[2], lattice=lattice)
@@ -69,7 +69,7 @@ def test_selected_records_keep_exact_coefficients_order_and_bounded_read_ledger(
 
 
 def test_header_inspection_reads_only_128_bytes_and_explicit_none_selects_all_k(tmp_path, monkeypatch):
-    from core.wavecar import inspect_wavecar, read_selected_wavecar
+    from vasp_sawf.wavecar import inspect_wavecar, read_selected_wavecar
 
     path, lattice, refs = _write_wavecar(tmp_path)
     original = np.fromfile
@@ -95,7 +95,7 @@ def test_header_inspection_reads_only_128_bytes_and_explicit_none_selects_all_k(
 @pytest.mark.parametrize('problem', ['rtag', 'multi_energy_record', 'lattice', 'k_range',
                                       'band_range', 'duplicate_bands', 'truncated'])
 def test_unsupported_or_inconsistent_wavecar_is_rejected(tmp_path, problem):
-    from core.wavecar import WavecarReadError, read_selected_wavecar
+    from vasp_sawf.wavecar import WavecarReadError, read_selected_wavecar
 
     path, lattice, _ = _write_wavecar(tmp_path, rtag=45210 if problem == 'rtag' else 45200,
                                      nb=90 if problem == 'multi_energy_record' else 4)
@@ -121,8 +121,8 @@ def test_real_srvo3_selected_bands_exactly_match_pymatgen_and_direct_records():
     if fixture is None:
         pytest.skip('SAWF_SRVO3_WANNIER was not explicitly set for the small-system fixture')
     from pymatgen.io.vasp.outputs import Wavecar
-    from core.inputs import read_inputs
-    from core.wavecar import read_selected_wavecar
+    from vasp_sawf.inputs import read_inputs
+    from vasp_sawf.wavecar import read_selected_wavecar
 
     fixture = Path(fixture)
     path = fixture / 'WAVECAR'

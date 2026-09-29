@@ -5,8 +5,8 @@ import pytest
 
 
 def module():
-    assert importlib.util.find_spec('core.symmetry') is not None
-    from core import symmetry as sewing
+    assert importlib.util.find_spec('vasp_sawf.symmetry') is not None
+    from vasp_sawf import symmetry as sewing
     return sewing
 
 

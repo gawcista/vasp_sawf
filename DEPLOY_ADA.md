@@ -1,99 +1,76 @@
-# Deploy and run on ADA
+# Install and run on ADA
 
-Clone the repository and run the two scripts in an isolated Python environment. There is no need to install this project as a Python package or transfer the local environment, results, or WAVECAR. Run step 1 on ADA where WAVECAR is stored; step 2 can run on ADA or locally.
+Install `vasp-sawf` into your chosen current Python environment and use its commands from any working directory. No project-specific virtual environment or fixed environment module is required. Run extraction on ADA where WAVECAR is stored; SAWF can run on ADA or locally without WAVECAR.
 
-The current dependency lock targets Linux x86_64 and CPython 3.13. Core versions are WannierBerri 1.7.0, IrRep 2.6.3, NumPy 2.3.5, SciPy 1.17.0, and Numba 0.62.1. Internal library interfaces were checked against these versions; do not replace them with the latest releases. Installation and real-data reproduction on ADA have not yet been verified. Local validation does not replace that check.
+The current release requires Python 3.13 (`>=3.13,<3.14`), matching the validated range. Critical versions are pinned in `pyproject.toml`, including WannierBerri 1.7.0, IrRep 2.6.3, NumPy 2.3.5, SciPy 1.17.0, and Numba 0.62.1. Installation and calculation reproduction on ADA have not yet been completed. A successful local test is not an ADA result.
 
-## 1. Clone and create an environment
+## 1. Install in the current environment
 
-Run these commands where you keep software. If `vasp_sawf` already exists, inspect it first; do not overwrite it.
+Activate the compatible environment you want to use. If a `vasp_sawf` checkout already exists, inspect it rather than overwriting it.
 
 ```bash
 git clone https://github.com/gawcista/vasp_sawf.git
 cd vasp_sawf
 git rev-parse HEAD
-find-module python-waterboa
-```
-
-ADA uses explicitly versioned environment modules. MPCDF's `python-waterboa/2025.06` is based on CPython 3.13 and is a suitable first candidate to check. Availability must be confirmed with `find-module` on ADA. If a virtual environment is already active, run `deactivate` before loading the module. Loading a module does not replace the interpreter of an existing virtual environment. If that module version is available:
-
-```bash
-module load python-waterboa/2025.06 &&
-python3.13 -c 'import sys; print(sys.version); assert sys.version_info[:2] == (3, 13)' &&
-getconf GNU_LIBC_VERSION &&
-test ! -e .venv && test ! -L .venv &&
-python3.13 -m venv .venv &&
-source .venv/bin/activate &&
-export PYTHONNOUSERSITE=1 &&
-python -c 'import sys; print(sys.version); print(sys.executable); assert sys.version_info[:2] == (3, 13) and sys.prefix != sys.base_prefix' &&
-python -m pip install --require-hashes -r requirements.lock &&
+python -c 'import sys; print(sys.version); print(sys.executable); assert sys.version_info[:2] == (3, 13)'
+python -m pip install -e .
 python -m pip check
 ```
 
-Stop if the module load or either interpreter check fails. Dependencies are installed into the new `.venv`, without `--user` or `--system-site-packages`. If `.venv` already exists, identify its purpose before recreating it; the recovery instructions below preserve an existing environment. Include the module load and environment activation in the actual job script; running them once in a login shell does not initialize every batch job.
+Stop if the interpreter check fails. Pip installs the package and dependencies into the environment selected by `python`; do not substitute another pip executable. The installed commands are `sawf-extract`, `sawf-run`, `sawf-plot-bands`, and `sawf-plot-symmetry`. Editable installation refers to this checkout directly, so keep it in place. There is no need to set `PYTHONPATH` or run from the source directory.
 
-`requirements.lock` pins runtime package versions and the SHA256 hashes of the artifacts downloaded locally. It is not a cross-platform lock: binary artifacts must match the Python ABI, CPU architecture, and glibc. For example, the SciPy artifact carries manylinux 2.27/2.28 tags. If pip reports no compatible artifact or a hash mismatch, retain the error and check these conditions. Do not bypass it by removing hashes or upgrading dependencies. `pylatexenc` is a source distribution, and its temporary build tools are not included in the lock; a fully closed, reproducible installation has not yet been demonstrated.
+An existing Python 3.6 environment cannot run this release. Activate an existing Python 3.13 environment instead. If none is available, `find-module python-waterboa` can identify suitable ADA modules. MPCDF documents `python-waterboa/2025.06` as based on CPython 3.13; use it only if available and appropriate for your setup. Loading a module does not change the interpreter with which an existing virtual environment was created. If you prefer a new environment, create it with the selected Python 3.13 interpreter using `python -m venv /path/to/new/environment`, without overwriting an existing path. These are optional ways to obtain a compatible interpreter, not project requirements.
 
-Module references: [MPCDF environment modules](https://docs.mpcdf.mpg.de/faq/hpc_software.html), [ADA documentation](https://docs.mpcdf.mpg.de/doc/computing/clusters/systems/MPSD_PKS_ADA.html), and the [Python 3.13 stack announcement](https://docs.mpcdf.mpg.de/bnb/pdf/bits_and_bytes_issue_219.pdf). Compiler, MPI, or GPU settings in unrelated cluster examples are not requirements of this program.
+References: [MPCDF environment modules](https://docs.mpcdf.mpg.de/faq/hpc_software.html), [ADA documentation](https://docs.mpcdf.mpg.de/doc/computing/clusters/systems/MPSD_PKS_ADA.html), [Python 3.13 stack announcement](https://docs.mpcdf.mpg.de/bnb/pdf/bits_and_bytes_issue_219.pdf), and [Python virtual environments](https://docs.python.org/3.13/library/venv.html).
 
-### Recover from a virtual environment created with system Python
+### Optional: reproduce the full artifact lock
 
-An ADA installation attempt used Python 3.6.15 inside `.venv`. Pip reached PyPI, but its verbose output rejected every `annotated-types` release because of `Requires-Python`. The locked version 0.8.0 requires Python >=3.10, while this project's full artifact lock targets CPython 3.13. The final `from versions: none` message did not mean that the release was absent from PyPI.
-
-Recreate the environment using Python 3.13, rather than upgrading pip inside the Python 3.6 environment or changing package pins. A virtual environment uses the base interpreter with which it was created; see the [Python venv documentation](https://docs.python.org/3.13/library/venv.html).
-
-From the repository directory, with the old environment active, first run:
+For the audited Linux x86_64 / CPython 3.13 dependency set, install the lock first and then install this project without resolving dependencies again:
 
 ```bash
-deactivate
-module load python-waterboa/2025.06
-python3.13 --version
-```
-
-Continue only if the module loads and the interpreter reports Python 3.13.x. If the module is unavailable, use `find-module python-waterboa` to identify an available Python 3.13 module; do not fall back to system `python3`.
-
-Use a new `.venv-py313` directory, leaving the old `.venv` untouched. If that new path already exists, inspect it instead of recreating it:
-
-```bash
-test ! -e .venv-py313 && test ! -L .venv-py313 &&
-python3.13 -m venv .venv-py313 &&
-source .venv-py313/bin/activate &&
-export PYTHONNOUSERSITE=1 &&
-python -c 'import sys; print(sys.version); print(sys.executable); assert sys.version_info[:2] == (3, 13) and sys.prefix != sys.base_prefix' &&
-python -m pip install --require-hashes -r requirements.lock &&
+python -m pip install --require-hashes -r requirements.lock
+python -m pip install --no-deps -e .
 python -m pip check
 ```
 
-Stop if environment creation, activation, or the interpreter check fails. Subsequent sessions and batch scripts must activate `.venv-py313/bin/activate` or explicitly invoke `.venv-py313/bin/python` when using this recovery environment. No package version or hash needs to change for this error. All 76 pinned versions and hashes were checked against official PyPI release metadata, and the 0.8.0 wheel was downloaded and hash-verified independently. These checks establish artifact availability, not a completed installation on ADA.
+The lock pins downloaded artifacts by version and SHA256. It is not a cross-platform lock: binary artifacts must match the Python ABI, CPU architecture, and glibc. For example, the SciPy artifact carries manylinux 2.27/2.28 tags. If pip reports no compatible artifact or a hash mismatch, retain the error and inspect these conditions instead of deleting hashes or upgrading dependencies. `pylatexenc` is a source distribution; its temporary build tools are outside this runtime lock. The project's build backend also has a separate build environment. This procedure does not claim a completely closed build-toolchain reproduction.
+
+An earlier ADA attempt used Python 3.6.15. Pip could reach PyPI but rejected `annotated-types` releases because of `Requires-Python`; the pinned 0.8.0 requires Python >=3.10, while the complete lock targets CPython 3.13. All 76 pinned versions and hashes were checked against official PyPI release metadata, and the 0.8.0 wheel was independently downloaded and hash-verified. Those historical checks establish artifact availability, not a completed ADA installation.
 
 ## 2. Check the installation
 
-Check dependencies and command entry points without reading wavefunctions:
+Check actual computational imports, packaged data, and entry points without reading wavefunctions. These commands can be run outside the checkout:
 
 ```bash
 python - <<'PYTHON'
 from importlib.metadata import version
-import core.inputs
-import core.wavecar
-import core.symmetry
-import core.localize
+from importlib.resources import files
+import json
+import vasp_sawf.inputs
+import vasp_sawf.wavecar
+import vasp_sawf.symmetry
+import vasp_sawf.localize
 for name in ('numpy', 'scipy', 'numba', 'irrep', 'wannierberri'):
     print(name, version(name))
 assert version('irrep') == '2.6.3'
 assert version('wannierberri') == '1.7.0'
+decision = json.loads(files('vasp_sawf').joinpath('accepted_closure.json').read_text())
+print('Packaged acceptance decision:', decision['id'])
 PYTHON
-python extract_symmetry.py --help
-python run_sawf.py --help
+sawf-extract --help
+sawf-run --help
+sawf-plot-bands --help
+sawf-plot-symmetry --help
 ```
 
-Run regression tests that require no external DFT data on allocated compute resources:
+For development tests, install `python -m pip install -e ".[test]"` from the checkout. Then run tests without external DFT data on allocated compute resources:
 
 ```bash
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
 PYTHONDONTWRITEBYTECODE=1 python -m pytest tests -q -m 'not real_data' -p no:cacheprovider
 ```
 
-This checks software behavior; it does not establish that the SrVO₃ calculation has been reproduced on ADA. Real-data regression requires separately supplied read-only inputs, using the environment variables in [README.md](README.md). Those data are not included in the repository. Record any skipped or deselected real-data tests accurately.
+Tests run from the checkout. They check software behavior, not reproduction of the SrVO₃ calculation on ADA. Real-data regression requires separately supplied read-only inputs, using the environment variables in [README.md](README.md). Record skipped or deselected real-data cases accurately.
 
 ## 3. Extract symmetry information on ADA
 
@@ -101,7 +78,7 @@ Run on allocated compute resources, replacing the example paths:
 
 ```bash
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
-python extract_symmetry.py \
+sawf-extract \
   --seed /path/to/interface/wannier90 \
   --wavecar /path/to/interface/WAVECAR \
   --outcar /path/to/interface/OUTCAR \
@@ -112,7 +89,7 @@ Required inputs are one consistent set of `.win/.mmn/.amn/.eig`, the OUTCAR from
 
 The only outputs are `bloch.npz` and `report.json`. To run step 2 locally, download the complete `symmetry` directory and retain the original interface files with identical contents. WAVECAR and UNK do not need to be downloaded.
 
-The program currently uses one Python process with NumPy/SciPy numerical kernels. Do not start the same extraction command on multiple MPI ranks; GPUs are not required. Begin with the BLAS thread settings used in small-system validation, then measure scaling separately. Large-system memory and wall time must be estimated from actual NG/NK/NB and calibrated with small tests. The program does not submit jobs automatically.
+The program uses one Python process with NumPy/SciPy numerical kernels. Do not start the same extraction command on multiple MPI ranks; GPUs are not required. The pinned WannierBerri implementation imports Ray even in serial mode, so Ray is a runtime dependency; the workflow does not start a Ray service or enable parallel execution. Begin with the BLAS thread settings used in small-system validation, then measure scaling separately. Large-system memory and wall time must be estimated from actual NG/NK/NB and calibrated with small tests. Jobs are not submitted automatically.
 
 ### ADA batch template and the current tSnS limitation
 
@@ -121,12 +98,12 @@ The program currently uses one Python process with NumPy/SciPy numerical kernels
 | Purpose | Path |
 | --- | --- |
 | Source checkout | `$HOME/.src/vasp_sawf` |
-| Python environment | `$HOME/.src/vasp_sawf/.venv-py313` |
+| Python environment | The compatible environment active at submission, with `vasp-sawf` installed |
 | Read-only interface inputs | `/ptmp/tSnS/scdm661` |
 | Job working directory and logs | `/ptmp/tSnS/sawf661` |
 | New extraction output | `/ptmp/tSnS/sawf661/symmetry` |
 
-The Python module must match the module used to create the environment. The template uses `python-waterboa/2025.06`; confirm its availability and complete installation first. It intentionally uses the Python 3.13 recovery environment, not the old Python 3.6 `.venv`.
+Use the Python 3.13 environment into which you installed the package when submitting. The template inherits that environment and binds both preflight and extraction to its `python`. Extraction uses `python -m vasp_sawf.extract_symmetry`, the module behind `sawf-extract`, so an unrelated command elsewhere on `PATH` cannot select a different interpreter. The template does not purge or load modules, activate a fixed virtual environment, or set `PYTHONPATH`. Any runtime libraries or module settings needed by your chosen interpreter must therefore be present in the submitted environment.
 
 **The current tSnS structure is not supported by the extraction algorithm yet.** A lightweight local check on 2026-09-28, using the actual WIN structure and fixed IrRep 2.6.3, found the candidate structural grey group `P2_11'`, with four operations. The nontrivial unitary operation has fractional rotation `diag(-1, 1, -1)` and translation `(0, 0.5, 0.3371566930075367)`. Its square is translation by `(0, 1, 0)`: the half translation along b cannot be removed by shifting the origin. Constructing a candidate grey group from structure does not establish the magnetic state of the calculation.
 
@@ -139,11 +116,12 @@ After these prerequisites have been resolved, submission would be:
 ```bash
 cd "$HOME/.src/vasp_sawf"
 git pull --ff-only
+python -m pip install -e .
 mkdir -p /ptmp/tSnS/sawf661
 sbatch extract_ada.sbatch
 ```
 
-Update source only when the checkout is clean and no job uses it. The working directory must exist before `sbatch`, because Slurm opens its logs before executing the script. Logs append to fixed `extract.out` and `extract.err` files; extraction refuses to overwrite the existing `symmetry` directory. No input files are copied or modified. If moving the template to another system, change its input and working-directory paths. `#SBATCH` directives do not expand `$HOME` or shell variables; this is why the source path is set in the shell body and the working directory is literal. See the [Slurm sbatch manual](https://slurm.schedmd.com/sbatch.html).
+Update source only when the checkout is clean and no job uses it. The working directory must exist before `sbatch`, because Slurm opens its logs before executing the script. Logs append to fixed `extract.out` and `extract.err` files; extraction refuses to overwrite the existing `symmetry` directory. No input files are copied or modified. If moving the template to another system, change its input and working-directory paths. `#SBATCH` directives do not expand `$HOME` or shell variables; the working-directory directive therefore uses a literal path. See the [Slurm sbatch manual](https://slurm.schedmd.com/sbatch.html).
 
 The template requests one node, one process, one CPU, and 64 GiB on `p.large`, without MPI, GPUs, or an exclusive node reservation. ADA's `p.large` nodes have 2 TB each and can be shared; an explicit `--mem` is needed to avoid the default allocation of all memory. The 24-hour setting is the documented partition time limit, not a runtime estimate. See the [official ADA partition documentation](https://docs.mpcdf.mpg.de/doc/computing/clusters/systems/MPSD_PKS_ADA.html).
 
@@ -166,7 +144,7 @@ Inspect the individual `srun` steps as well as the job row. Logical bytes read b
 Use a machine with the same dependencies. The center and orbital below apply only to the validated SrVO₃ example:
 
 ```bash
-python run_sawf.py \
+sawf-run \
   --seed /path/to/interface/wannier90 \
   --symmetry /path/to/results/symmetry \
   --center 0.5 0.5 0.5 --orbital t2g \
@@ -179,8 +157,10 @@ See README for the optional DFT path, three band plots, and replotting commands.
 
 ## Update the code
 
-Record `git rev-parse HEAD` when installing. Later, run `git pull --ff-only` only with a clean working tree and no calculation currently using that source checkout. If the dependency lock changes, reinstall into the isolated environment and repeat the checks above. Use `git switch --detach <full-commit>` to fix the source version for reproduction. To modify source, create a separate worktree from the relevant commit and keep original calculation inputs read-only.
+Record `git rev-parse HEAD` when installing. Later, run `git pull --ff-only` only with a clean working tree and no calculation currently using that source checkout. If package metadata or dependencies change, rerun `python -m pip install -e .` in the chosen environment and repeat the checks above. Editable source changes are otherwise visible immediately, so do not update a checkout used by a running job. Use `git switch --detach <full-commit>` to fix the source version for reproduction. To modify source, create a separate worktree from the relevant commit and keep original calculation inputs read-only.
 
-## Release validation status
+## Validation status
 
-Local Linux/Python 3.13 checks on 2026-09-28 passed `pip check`, actual core-module imports, both computational entry points' `--help`, and 184 portable tests; 16 external-data cases were deselected. The final English source was tested from a temporary copy containing only the release files. Four additional tests passed against the existing SrVO₃ symmetry bundle, checking legacy compatibility and rejection of altered evidence without reading WAVECAR. The temporary copy was removed after testing. The optional pyFFTW package is not installed, so WannierBerri uses its official NumPy FFT fallback. Installation and calculation reproduction on ADA remain untested. No cluster jobs have been submitted.
+The 2026-09-29 package installation was tested in a fresh temporary local Python 3.13 environment, with runtime dependencies resolved from official PyPI. Editable installation and `pip check` passed. From a directory outside the checkout, all four commands, actual computational imports, the packaged acceptance record, and the full regression suite passed: 190 tests passed and 16 external-data cases were skipped. Replacing the editable install with a built wheel produced the same result, with imports resolving to `site-packages`. The wheel contains only the package and its distribution metadata; its acceptance JSON is byte-identical to the source record. Slurm shell and embedded-Python syntax checks also passed. No production environment was modified, no original WAVECAR was read, and no ADA job was submitted.
+
+Before the packaging change, local Linux/Python 3.13 checks on 2026-09-28 passed `pip check`, actual computational-module imports, both computational entry points' `--help`, and 184 portable tests; 16 external-data cases were deselected. The final English source was tested from a temporary copy containing only the release files. Four additional tests passed against the existing SrVO₃ symmetry bundle, checking legacy compatibility and rejection of altered evidence without reading WAVECAR. The temporary copy was removed after testing. The optional pyFFTW package is not installed, so WannierBerri uses its official NumPy FFT fallback. Installation and calculation reproduction on ADA remain untested. No cluster jobs have been submitted.

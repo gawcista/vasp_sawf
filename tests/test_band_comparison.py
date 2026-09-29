@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import pytest
 
-from core.bands import path_geometry, read_dft_eigenval, read_win_path
+from vasp_sawf.bands import path_geometry, read_dft_eigenval, read_win_path
 
 
 def test_path_does_not_add_distance_or_join_disconnected_segments():

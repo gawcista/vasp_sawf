@@ -21,7 +21,7 @@ def _analytic_system():
 
 
 def test_fourier_matches_independent_analytic_hamiltonian_and_eigenvalues():
-    from core.bands import evaluate_hamiltonian, evaluate_bands
+    from vasp_sawf.bands import evaluate_hamiltonian, evaluate_bands
 
     k = np.array([[0.173, -0.219, 0.312], [0.41, 0.227, -0.29], [0, 0, 0]])
     x, y = (2*np.pi*k[:, axis] for axis in (0, 1))
@@ -41,14 +41,14 @@ def test_fourier_matches_independent_analytic_hamiltonian_and_eigenvalues():
 
 @pytest.mark.parametrize("kpoints", [np.zeros(3), np.ones((2, 2)), [[float("nan"), 0, 0]]])
 def test_invalid_path_rejected(kpoints):
-    from core.bands import evaluate_hamiltonian
+    from vasp_sawf.bands import evaluate_hamiltonian
 
     with pytest.raises(ValueError, match="k points"):
         evaluate_hamiltonian(_analytic_system(), kpoints)
 
 
 def test_nonhermitian_input_is_rejected_without_averaging():
-    from core.bands import evaluate_bands
+    from vasp_sawf.bands import evaluate_bands
 
     system = _analytic_system()
     system.get_R_mat("Ham")[0, 0, 1] += 0.01
@@ -57,7 +57,7 @@ def test_nonhermitian_input_is_rejected_without_averaging():
 
 
 def test_fourier_matches_official_single_k_fft_without_hermitian_projection():
-    from core.bands import evaluate_hamiltonian
+    from vasp_sawf.bands import evaluate_hamiltonian
     from wannierberri.fourier.rvectors import Rvectors
 
     system = _analytic_system()
@@ -71,7 +71,7 @@ def test_fourier_matches_official_single_k_fft_without_hermitian_projection():
 
 
 def test_workflow_rejects_output_inside_protected_input_tree(tmp_path):
-    from core.localize import _new_output
+    from vasp_sawf.localize import _new_output
     source = tmp_path / 'inputs'
     source.mkdir()
     rejected = source / "protected_input"

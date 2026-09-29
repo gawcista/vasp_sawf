@@ -1,4 +1,4 @@
-#!/bin/bash -l
+#!/bin/bash
 #SBATCH --job-name=sawf-extract
 #SBATCH --partition=p.large
 #SBATCH --nodes=1
@@ -10,27 +10,24 @@
 #SBATCH --output=extract.out
 #SBATCH --error=extract.err
 #SBATCH --open-mode=append
+#SBATCH --export=ALL
 
 set -euo pipefail
 : "${SLURM_JOB_ID:?Submit this script with sbatch; do not run extraction on a login node}"
 
-CODE_ROOT="$HOME/.src/vasp_sawf"
 INPUT_ROOT=/ptmp/tSnS/scdm661
-PYTHON="$CODE_ROOT/.venv-py313/bin/python"
+PYTHON="$(command -v python)"
 SEED="$INPUT_ROOT/wannier90"
 WAVECAR="$INPUT_ROOT/WAVECAR"
 OUTCAR="$INPUT_ROOT/OUTCAR"
 OUTPUT="$PWD/symmetry"
 
-# Use the same module that was used to create the virtual environment.
-module purge
-module load python-waterboa/2025.06
-export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
+# Inherit the environment in which the package was installed.
+export PYTHONDONTWRITEBYTECODE=1
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 export NUMBA_NUM_THREADS=1
 
 test -x "$PYTHON"
-test -f "$CODE_ROOT/extract_symmetry.py"
 if [[ -e "$OUTPUT" || -L "$OUTPUT" ]]; then
     printf 'Output already exists: %s\n' "$OUTPUT" >&2
     exit 1
@@ -39,21 +36,19 @@ for input in "$SEED.win" "$SEED.mmn" "$SEED.amn" "$SEED.eig" "$WAVECAR" "$OUTCAR
     test -r "$input" || { printf 'Input is not readable: %s\n' "$input" >&2; exit 1; }
 done
 
-export PYTHONPATH="$CODE_ROOT"
 export NUMBA_CACHE_DIR="$PWD/.cache/numba"
 export MPLCONFIGDIR="$PWD/.cache/matplotlib"
 printf 'Job %s on %s\n' "$SLURM_JOB_ID" "${SLURMD_NODENAME:-unknown}"
-git -C "$CODE_ROOT" rev-parse HEAD
-"$PYTHON" -c 'import sys; print(sys.version); print(sys.executable); assert sys.version_info[:2] == (3, 13) and sys.prefix != sys.base_prefix'
+"$PYTHON" -c 'import sys, vasp_sawf; from importlib.metadata import version; print(sys.version); print(sys.executable); print("vasp-sawf", version("vasp-sawf"), vasp_sawf.__file__); assert sys.version_info[:2] == (3, 13)'
 
 # Reject unsupported symmetry before reading any wavefunction coefficients.
 srun --ntasks=1 "$PYTHON" - "$SEED" "$WAVECAR" <<'PYTHON'
 import sys
 from pathlib import Path
 from irrep.spacegroup import SpaceGroup
-from core.inputs import read_inputs
-from core.symmetry import _cell_from_win, _validate_grey_group, build_symmetry_maps
-from core.wavecar import inspect_wavecar
+from vasp_sawf.inputs import read_inputs
+from vasp_sawf.symmetry import _cell_from_win, _validate_grey_group, build_symmetry_maps
+from vasp_sawf.wavecar import inspect_wavecar
 
 seed, wavecar = map(Path, sys.argv[1:])
 header = inspect_wavecar(wavecar)
@@ -71,7 +66,7 @@ build_symmetry_maps(bundle, group)
 print("Structural preflight passed; magnetic and source checks follow in extraction", flush=True)
 PYTHON
 
-srun --ntasks=1 /usr/bin/time -v "$PYTHON" "$CODE_ROOT/extract_symmetry.py" \
+srun --ntasks=1 /usr/bin/time -v "$PYTHON" -m vasp_sawf.extract_symmetry \
     --seed "$SEED" \
     --wavecar "$WAVECAR" \
     --outcar "$OUTCAR" \

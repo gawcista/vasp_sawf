@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vasp-sawf"
+version = "0.1.0"
+description = "Reuse VASP SCDM inputs for symmetry-constrained Wannierization"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "numpy==2.3.5",
+    "scipy==1.17.0",
+    "numba==0.62.1",
+    "wannierberri==1.7.0",
+    "irrep==2.6.3",
+    "pymatgen==2025.10.7",
+    "matplotlib==3.11.2",
+    "spglib==2.6.0",
+    "spgrep==0.4.0",
+    "h5py==3.14.0",
+    "wannier90io==0.1.0b1",
+    "sympy==1.14.0",
+    "fortio==0.4",
+    "ray==2.51.1",
+]
+
+[project.optional-dependencies]
+test = ["pytest==9.0.3"]
+
+[project.scripts]
+sawf-extract = "vasp_sawf.extract_symmetry:main"
+sawf-run = "vasp_sawf.run_sawf:main"
+sawf-plot-bands = "vasp_sawf.plot_bands:main"
+sawf-plot-symmetry = "vasp_sawf.plot_symmetry:main"
+
+[project.urls]
+Repository = "https://github.com/gawcista/vasp_sawf"
+
+[tool.setuptools]
+packages = ["vasp_sawf"]
+include-package-data = false
+
+[tool.setuptools.package-data]
+vasp_sawf = ["accepted_closure.json"]

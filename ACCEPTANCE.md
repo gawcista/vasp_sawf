@@ -119,7 +119,7 @@ The actual setting in the current OUTCAR is `LREAL=Auto`, with the effective out
 
 ## Removing the blocker while retaining the other checks
 
-The decision record is [core/accepted_closure.json](core/accepted_closure.json). For the four interface hashes above, the reported precision used in this discussion, `2.59e-6`, is the upper limit of the accepted numerical range. It is slightly above the full measured value and is not a general closure threshold for other sources.
+The decision record is [vasp_sawf/accepted_closure.json](vasp_sawf/accepted_closure.json). For the four interface hashes above, the reported precision used in this discussion, `2.59e-6`, is the upper limit of the accepted numerical range. It is slightly above the full measured value and is not a general closure threshold for other sources.
 
 - A new extraction from the same source adopts this decision automatically if its residual is within this range and all other numerical checks pass. Neither `numerical_trial` nor another manual confirmation is required.
 - Reuse of the historical small package requires both the four interface hashes and the reviewed `bloch.npz` hash above, together with the original numerical-check evidence. The program applies the new decision in memory only; it does not rewrite historical reports or packages.
@@ -134,7 +134,7 @@ Future work on μeV-scale splittings, sensitive wavefunction matrix elements, or
 - The [historical symmetry-package report](../../runs/srvo3/reference/report.json) retains the original bytes from the numerical trial. The [current model report](../../runs/srvo3/model/summary.json) records readiness after applying this decision. The historical `numerical_trial` describes the qualification at that time; it does not mean the current model remains unaccepted. The model's `coefficient_closure_evidence.source_report_sha256` binds that historical report, so it is retained during directory cleanup. The relative link `reference/bloch.npz` points to the current `symmetry/bloch.npz`; both refer to the same package hash, without duplicate storage.
 - The independent coefficient reader, per-band errors, and storage-rounding bounds remain in Git history under `coefficient_closure_independent` in `git show e654ac8:VALIDATION.json`. The cleaned historical report tree need not be restored.
 - Energy gaps and effective settings come from `/mnt/d/Working/SrVO3/results/scdm_test/wannier/OUTCAR`. The path reference comes from `/mnt/d/Working/SrVO3/results/scdm_test/bandsoc/EIGENVAL`.
-- Residual evaluation and full-mesh propagation are implemented in [core/symmetry.py](core/symmetry.py). Final-model, 13-point off-mesh, TRIM, and path checks are in [core/localize.py](core/localize.py).
+- Residual evaluation and full-mesh propagation are implemented in [vasp_sawf/symmetry.py](vasp_sawf/symmetry.py). Final-model, 13-point off-mesh, TRIM, and path checks are in [vasp_sawf/localize.py](vasp_sawf/localize.py).
 
 ## Validation after implementing the decision
 

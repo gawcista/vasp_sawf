@@ -7,7 +7,7 @@ import pytest
 from wannierberri.symmetry.sawf import SymmetrizerSAWF
 from wannierberri.symmetry.sawf_kirr import Symmetrizer_Uirr as OfficialSymmetrizerUirr
 from wannierberri.w90files.chk import CheckPoint
-from core.localize import StrictSymmetrizerUirr as Symmetrizer_Uirr
+from vasp_sawf.localize import StrictSymmetrizerUirr as Symmetrizer_Uirr
 
 
 def _symmetrizer(*, invalid_upper=False, time_reversal=False, nb=6):
@@ -109,7 +109,7 @@ def test_eight_dimensional_spinor_action_requires_conjugation_and_retains_all_ba
 
 
 def test_eight_band_driver_identity_neighbours_have_exact_zero_spread():
-    from core.localize import wannierise_strict
+    from vasp_sawf.localize import wannierise_strict
 
     data = _data(nb=8)
     report = wannierise_strict(data, _symmetrizer(time_reversal=True, nb=8),
@@ -126,7 +126,7 @@ def test_eight_band_driver_identity_neighbours_have_exact_zero_spread():
 
 @pytest.mark.parametrize("corruption", ["odd", "non_square", "eigenvalue_metadata", "checkpoint", "band_block"])
 def test_dimension_changes_are_rejected_before_localisation(corruption):
-    from core.localize import wannierise_strict
+    from vasp_sawf.localize import wannierise_strict
 
     nb = 7 if corruption == "odd" else 6
     data, sym = _data(nb=nb), _symmetrizer(time_reversal=True, nb=nb)
@@ -144,7 +144,7 @@ def test_dimension_changes_are_rejected_before_localisation(corruption):
 
 
 def test_driver_preserves_external_amn_and_exports_complete_square_gauge():
-    from core.localize import wannierise_strict
+    from vasp_sawf.localize import wannierise_strict
 
     data = _data()
     originals = {name: data.get_file(name).data[0].copy() for name in ("amn", "mmn", "eig")}
@@ -160,7 +160,7 @@ def test_driver_preserves_external_amn_and_exports_complete_square_gauge():
 
 
 def test_final_centers_are_checked_from_the_complete_final_gauge():
-    from core.localize import wannierise_strict
+    from vasp_sawf.localize import wannierise_strict
 
     data, sym = _data(), _symmetrizer(time_reversal=True)
     sym.symmetrize_WCC = lambda centers: centers + 0.1
@@ -171,7 +171,7 @@ def test_final_centers_are_checked_from_the_complete_final_gauge():
 
 
 def test_driver_global_iteration_exhaustion_leaves_no_success_state():
-    from core.localize import wannierise_strict
+    from vasp_sawf.localize import wannierise_strict
 
     data = _data()
     with pytest.raises(RuntimeError, match="converge"):
@@ -182,7 +182,7 @@ def test_driver_global_iteration_exhaustion_leaves_no_success_state():
 
 @pytest.mark.parametrize("corruption", ["irreducible", "missing_band", "k_order", "nonfinite", "missing_tr"])
 def test_driver_rejects_inputs_before_localisation(corruption):
-    from core.localize import wannierise_strict
+    from vasp_sawf.localize import wannierise_strict
 
     data, sym = _data(), _symmetrizer(time_reversal=True)
     if corruption == "irreducible":
@@ -202,8 +202,8 @@ def test_driver_rejects_inputs_before_localisation(corruption):
 
 @pytest.mark.real_data
 def test_real_srvo3_loader_neighbour_mapping_passes_strict_shape_guard():
-    from core.localize import _validated_inputs
-    from core.inputs import load_wannier_data
+    from vasp_sawf.localize import _validated_inputs
+    from vasp_sawf.inputs import load_wannier_data
 
     seed = os.environ.get("SAWF_SRVO3_SEED")
     if not seed:
@@ -245,7 +245,7 @@ def _alignment_fixture(nb=6):
 
 
 def test_eight_band_alignment_keeps_reversible_column_and_cell_ledger():
-    from core.localize import align_scdm_initial_gauge
+    from vasp_sawf.localize import align_scdm_initial_gauge
 
     amn, ordinary, centers, lattice, kpoints, sym, shifts = _alignment_fixture(nb=8)
     before = amn.copy()
@@ -259,7 +259,7 @@ def test_eight_band_alignment_keeps_reversible_column_and_cell_ledger():
 
 
 def test_alignment_does_not_claim_support_for_multiple_target_centers():
-    from core.localize import align_scdm_initial_gauge
+    from vasp_sawf.localize import align_scdm_initial_gauge
 
     amn, ordinary, centers, lattice, kpoints, sym, _ = _alignment_fixture(nb=8)
     target = np.zeros((8, 3))
@@ -270,7 +270,7 @@ def test_alignment_does_not_claim_support_for_multiple_target_centers():
 
 
 def test_alignment_preserves_raw_amn_removes_cell_phases_and_uses_tr_conjugation():
-    from core.localize import align_scdm_initial_gauge
+    from vasp_sawf.localize import align_scdm_initial_gauge
 
     amn, ordinary, centers, lattice, kpoints, sym, shifts = _alignment_fixture()
     before = amn.copy()
@@ -290,7 +290,7 @@ def test_alignment_preserves_raw_amn_removes_cell_phases_and_uses_tr_conjugation
 
 @pytest.mark.parametrize("corruption", ["center", "ordinary_nonunitary", "amn_singular", "no_gamma", "nonfinite", "lattice", "intertwiner_rank"])
 def test_alignment_rejects_unproven_or_singular_transformations(corruption):
-    from core.localize import align_scdm_initial_gauge
+    from vasp_sawf.localize import align_scdm_initial_gauge
 
     amn, ordinary, centers, lattice, kpoints, sym, _ = _alignment_fixture()
     if corruption == "center":
@@ -313,7 +313,7 @@ def test_alignment_rejects_unproven_or_singular_transformations(corruption):
 
 
 def test_driver_uses_provided_initial_gauge_without_overwriting_amn():
-    from core.localize import wannierise_strict
+    from vasp_sawf.localize import wannierise_strict
 
     data = _data()
     initial = np.diag(np.exp(1j*np.array([.2, -.2, .3, -.3, .4, -.4])))[None]
@@ -326,7 +326,7 @@ def test_driver_uses_provided_initial_gauge_without_overwriting_amn():
 
 @pytest.mark.parametrize("initial", [np.zeros((1, 6, 6)), np.full((1, 6, 6), np.nan), np.eye(6)])
 def test_driver_rejects_invalid_provided_initial_gauge(initial):
-    from core.localize import wannierise_strict
+    from vasp_sawf.localize import wannierise_strict
 
     data = _data()
     with pytest.raises(ValueError):

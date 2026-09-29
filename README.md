@@ -1,29 +1,39 @@
 # vasp_sawf: SCDM → SAWF
 
-Two computational scripts extract symmetry information on the machine holding the WAVECAR, then use the original SCDM initial guess for Wannierization constrained by space-group symmetry and time reversal. Plotting scripts read existing numerical results; they do not compute or validate a model.
+Reuse VASP subspace-SCDM matrices in two steps: extract symmetry information where WAVECAR is stored, then run WannierBerri localization constrained by space-group symmetry and time reversal. Optional plotting commands read existing results.
 
-Repository: [gawcista/vasp_sawf](https://github.com/gawcista/vasp_sawf). See [DEPLOY_ADA.md](DEPLOY_ADA.md) for cloning, creating an isolated environment, and checking the installation on ADA. Run the scripts directly; `pip install .` is not required. The repository contains no calculation data. `DATA_ROOT` and local paths below record the existing validation setup, not required installation locations. Historical local commit IDs record provenance; the old development history and raw calculation data are not part of the public repository.
+Repository: [gawcista/vasp_sawf](https://github.com/gawcista/vasp_sawf). No calculation data are included. Historical local paths and commit IDs record provenance; the old development history is not part of the public repository.
 
-The user has accepted the coefficient-closure residual for the current SrVO₃ dataset. Both scripts run directly, without a trial option or repeated approval. [ACCEPTANCE.md](ACCEPTANCE.md) records the physical reasoning, evidence, and scope of that decision.
+## Install in your current environment
 
-See [SYMMETRY.md](SYMMETRY.md) for the constraints imposed by SAWF, the comparison with ordinary Wannierization, and measured SrVO₃ residuals.
+The current release requires Python 3.13 (`>=3.13,<3.14`). With your chosen compatible environment active:
 
-```text
-extract_symmetry.py   Step 1: extract symmetry information
-run_sawf.py           Step 2: run SAWF
-plot_bands.py         Optional: plot existing band arrays
-plot_symmetry.py      Optional: plot existing symmetry residuals
-core/                Internal implementation shared by the two scripts
-tests/               Mathematical, file-reading, and real-data regression tests
-requirements.lock    Exact dependencies of the validated local environment
-DEPLOY_ADA.md        ADA deployment and execution instructions
-ACCEPTANCE.md        Acceptance basis for the current SrVO₃ coefficient closure
+```bash
+git clone https://github.com/gawcista/vasp_sawf.git
+cd vasp_sawf
+python -m pip install -e .
+python -m pip check
 ```
+
+Pip installs the package and its dependencies into the environment selected by `python`. No project-specific virtual environment or fixed ADA module is required. Editable installation uses this checkout directly: keep it in place and do not change its source while a calculation uses it. The Python import name is `vasp_sawf`; the distribution name is `vasp-sawf`.
+
+The installed commands are available from any working directory in that environment:
+
+| Command | Purpose |
+| --- | --- |
+| `sawf-extract` | Extract the Bloch symmetry bundle |
+| `sawf-run` | Run SAWF from the original SCDM initial guess |
+| `sawf-plot-bands` | Plot saved DFT, ordinary Wannier, and SAWF bands |
+| `sawf-plot-symmetry` | Plot saved symmetry-comparison residuals |
+
+Critical library versions are pinned in `pyproject.toml`. [DEPLOY_ADA.md](DEPLOY_ADA.md) covers ADA execution, the optional full artifact lock, and the current tSnS limitation. Source files are in `vasp_sawf/`; tests are in `tests/`.
+
+The current SrVO₃ coefficient-closure residual has been accepted: see [ACCEPTANCE.md](ACCEPTANCE.md) for the reasoning and dataset scope. No trial option or repeated approval is required for that dataset. [SYMMETRY.md](SYMMETRY.md) explains the constraints and comparison with ordinary Wannierization.
 
 ## Step 1: extract on ADA
 
 ```bash
-python extract_symmetry.py \
+sawf-extract \
   --seed /path/to/interface/wannier90 \
   --wavecar /path/to/interface/WAVECAR \
   --outcar /path/to/interface/OUTCAR \
@@ -41,7 +51,7 @@ The outputs are `bloch.npz` and `report.json`. Together they form a small symmet
 The following target has been validated for SrVO₃ only; do not reuse it for another material without justification:
 
 ```bash
-python run_sawf.py \
+sawf-run \
   --seed /path/to/local/interface/wannier90 \
   --symmetry /path/to/local/symmetry \
   --center 0.5 0.5 0.5 --orbital t2g \
@@ -71,12 +81,12 @@ Add the following options to the step 2 command:
 This reference energy applies only to the current SrVO₃ example. The path must match `kpoint_path` in WIN. The program evaluates ordinary Wannier and SAWF interpolation along that same path and stores the unshifted arrays in eV. The DFT path file is optional for SAWF itself.
 
 ```bash
-python plot_bands.py /path/to/results/model/bands.npz --output /path/to/results/figures
+sawf-plot-bands /path/to/results/model/bands.npz --output /path/to/results/figures
 ```
 
 Plotting depends only on NumPy and Matplotlib. It does not read WAVECAR, call IrRep or WannierBerri, or validate the model. Each of the three plots is saved as PNG and PDF. Replotting overwrites the same figure names. The reference energy is subtracted only during plotting.
 
-The band style follows the existing `vaspsrc` example: 4×4 inches, Arial 18 pt, a 24 pt y-axis label, 3 pt axes borders, 0.5 pt curves, gray dashed lines at interior high-symmetry points, and transparent output at 600 dpi. Edit these parameters, energy limits, and colors at the top of the script; layout is controlled in `plot_bands()`. Figure text and repository documentation are in English.
+The band style follows the existing `vaspsrc` example: 4×4 inches, Arial 18 pt, a 24 pt y-axis label, 3 pt axes borders, 0.5 pt curves, gray dashed lines at interior high-symmetry points, and transparent output at 600 dpi. Edit these parameters, energy limits, and colors in [vasp_sawf/plot_bands.py](vasp_sawf/plot_bands.py); layout is controlled in `plot_bands()`. Figure text and repository documentation are in English.
 
 The SrVO₃ path is denser than the original example. `XTICK_FONT_SIZE=14` separately controls path labels so that `X|R` does not overlap the neighboring `M`; other text remains 18 pt. These settings can all be edited at the top of the script.
 
@@ -97,11 +107,11 @@ DATA_ROOT/.sawf-bridge/runs/srvo3/
 To replot existing results from the current development worktree:
 
 ```bash
-python plot_bands.py ../../runs/srvo3/model/bands.npz --output ../../runs/srvo3/figures
-python plot_symmetry.py ../../runs/srvo3/reference/comparison.json --output ../../runs/srvo3/figures
+sawf-plot-bands ../../runs/srvo3/model/bands.npz --output ../../runs/srvo3/figures
+sawf-plot-symmetry ../../runs/srvo3/reference/comparison.json --output ../../runs/srvo3/figures
 ```
 
-`plot_symmetry.py` plots saved residuals in English; it does not recompute symmetry. `reference` retains the ordinary gauge, H_R, and the provenance reports needed to check the existing comparison. It is not an additional computational entry point. Legacy provenance reports retain their original bytes and may therefore contain paths from before the directory cleanup. The layout above gives the current locations. Legacy-bundle regression uses `reference/report.json` and a relative link to `../symmetry/bloch.npz`, without storing another copy of the Bloch bundle.
+`sawf-plot-symmetry` plots saved residuals in English; it does not recompute symmetry. `reference` retains the ordinary gauge, H_R, and the provenance reports needed to check the existing comparison. It is not an additional computational entry point. Legacy provenance reports retain their original bytes and may therefore contain paths from before the directory cleanup. The layout above gives the current locations. Legacy-bundle regression uses `reference/report.json` and a relative link to `../symmetry/bloch.npz`, without storing another copy of the Bloch bundle.
 
 Fixed directories do not mean that the computational scripts overwrite existing results. Before recomputing, remove only the generated results of the selected stage within the authorized scope, then reuse the same `--output` path. Do not remove original DFT inputs. Layout changes require only replotting, without rerunning calculations or creating dated directories.
 
@@ -111,17 +121,19 @@ For another material, provide its interface files, WAVECAR, OUTCAR, and independ
 
 The implementation currently supports nonmagnetic SOC grey groups, Cartesian SAXIS, a closed subspace with positive even `NB=NW`, a complete Γ-centered mesh with an actual Γ-point wavefunction, and zero space-group translations. WAVECAR must have RTAG45200, with energy data contained in one record per k point. Initial-guess alignment requires all columns to share one center uniquely fixed by the group. Multiple target centers, nonzero space-group translations, arbitrary spin axes, and arbitrary WAVECAR formats are not supported. Unsupported cases stop; changing paths alone does not make the workflow valid for every material.
 
-SrVO₃ is the only material covered by real-data regression so far. Eight-dimensional analytical tests check dimension handling, not tSnS validity. The tSnS target representation and possible need for multiple centers remain to be established. Its 6×6×1 mesh must not be reduced.
+SrVO₃ is the only material covered by real-data regression so far. Eight-dimensional analytical tests check dimension handling, not tSnS validity. The current tSnS structure has a nonzero screw translation that this implementation rejects; its symmetry-related centers and target representation remain to be established. See the structural evidence and limits in [DEPLOY_ADA.md](DEPLOY_ADA.md). Its 6×6×1 mesh must not be reduced.
 
 The SrVO₃ coefficient-closure residual `2.589629272055618e-6` has been accepted for the current single-particle model. The [acceptance decision](ACCEPTANCE.md) is bound to the contents of the four original interface files and applies automatically within the approved `2.59e-6` bound. Other matrix checks and convergence requirements remain unchanged. The previously reviewed trial bundle can be used directly in step 2: the program applies the new decision in memory, without modifying that bundle or requiring another WAVECAR extraction. New results have status `ready` and `physical_acceptance_status=accepted_for_single_particle_model`; figures no longer carry a pending-acceptance note. Historical reports are unchanged and do not describe the current acceptance status. Other inputs do not inherit this decision, and residuals below the numerical reference do not by themselves establish physical acceptance for another dataset.
 
 ## Environment and validation
 
-The measured local environment is Linux/Python 3.13 with WannierBerri 1.7.0, IrRep 2.6.3, NumPy 2.3.5, and SciPy 1.17.0. Exact dependencies are in `requirements.lock`. This is a local lock, not an ADA installation that has already been replayed. Run the two scripts directly; installing the project as a Python package is unnecessary.
+On 2026-09-29, editable installation with dependency resolution succeeded in a fresh temporary Python 3.13 environment using official PyPI. `pip check` passed. The complete test suite ran outside the checkout with 190 passed and 16 external-data tests skipped. A normal wheel was then built and installed in place of the editable package; imports resolved to `site-packages`, and the same suite again passed 190 tests with 16 skipped. Both modes checked all four commands, real computational imports, and the packaged acceptance record without relying on `PYTHONPATH`. The optional pyFFTW warning used WannierBerri's NumPy fallback. Core computation files and the acceptance JSON remained byte-identical during the namespace move. These checks did not read an original WAVECAR or execute an ADA job, and they do not extend the supported physical cases.
 
-The existing local interpreter is `DATA_ROOT/.sawf-bridge/envs/smoke-py313/bin/python`. Both stages currently use serial Python with NumPy/SciPy and the official libraries. Small-system tests set `OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1`. MPI is not implemented, and large-system parallel scaling has not been validated. Memory must not be inferred from total WAVECAR size. Jobs are not submitted automatically.
+The measured local environment is Linux/Python 3.13 with WannierBerri 1.7.0, IrRep 2.6.3, NumPy 2.3.5, and SciPy 1.17.0. Exact dependencies are in `requirements.lock`. This is a local lock, not an ADA installation that has already been replayed. Install this release into the compatible environment with `python -m pip install -e .` and use the installed commands.
 
-Run development tests with `PYTHONDONTWRITEBYTECODE=1 python -m pytest tests -q -p no:cacheprovider`. Real-data tests require explicit read-only input paths through `SAWF_SRVO3_ROOT`, `SAWF_SRVO3_SEED`, `SAWF_SRVO3_WANNIER`, `SAWF_SRVO3_SOC`, and `SAWF_SRVO3_SYMMETRY`; otherwise they are skipped. The first four still refer to the original SrVO₃ calculations. Legacy-bundle regression uses `SAWF_SRVO3_SYMMETRY=DATA_ROOT/.sawf-bridge/runs/srvo3/reference`. Tests include independent pymatgen and raw-record references, analytical Hamiltonians, antiunitary conjugation, and rejection of automatic band removal or false convergence.
+The historical local validation interpreter is `DATA_ROOT/.sawf-bridge/envs/smoke-py313/bin/python`; it is not a required installation path. Both stages currently use serial Python with NumPy/SciPy and the official libraries. Small-system tests set `OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1`. MPI is not implemented, and large-system parallel scaling has not been validated. Memory must not be inferred from total WAVECAR size. Jobs are not submitted automatically.
+
+For development, install the test extra with `python -m pip install -e ".[test]"`, then run `PYTHONDONTWRITEBYTECODE=1 python -m pytest tests -q -p no:cacheprovider` from the checkout. Real-data tests require explicit read-only input paths through `SAWF_SRVO3_ROOT`, `SAWF_SRVO3_SEED`, `SAWF_SRVO3_WANNIER`, `SAWF_SRVO3_SOC`, and `SAWF_SRVO3_SYMMETRY`; otherwise they are skipped. The first four still refer to the original SrVO₃ calculations. Legacy-bundle regression uses `SAWF_SRVO3_SYMMETRY=DATA_ROOT/.sawf-bridge/runs/srvo3/reference`. Tests include independent pymatgen and raw-record references, analytical Hamiltonians, antiunitary conjugation, and rejection of automatic band removal or false convergence.
 
 The 2026-09-24 two-script refactoring regression passed 187 tests; 3 tSnS tests were not run. The new SrVO₃ symmetry arrays and all eight model arrays were elementwise identical to the earlier converged results. SAWF without a DFT path also converged to the identical model. Measured extraction took 52.1 seconds, with 3,015,936 logical bytes read plus a 128-byte header precheck. Local SAWF including the path took 20.6 seconds. These are local small-system measurements, not ADA or tSnS performance estimates.
 

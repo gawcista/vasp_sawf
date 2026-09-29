@@ -25,7 +25,7 @@ def _tiny_seed(tmp_path):
 
 
 def test_external_amn_and_exact_mmn_edges_survive_without_nnkp(tmp_path):
-    from core.inputs import load_wannier_data
+    from vasp_sawf.inputs import load_wannier_data
 
     seed = _tiny_seed(tmp_path)
     before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
@@ -43,8 +43,8 @@ def test_external_amn_and_exact_mmn_edges_survive_without_nnkp(tmp_path):
 
 
 def test_bohr_uses_one_explicit_conversion_convention(tmp_path):
-    from core.inputs import load_wannier_data
-    from core.inputs import read_inputs
+    from vasp_sawf.inputs import load_wannier_data
+    from vasp_sawf.inputs import read_inputs
 
     seed = _tiny_seed(tmp_path)
     win = seed.with_suffix(".win")
@@ -55,7 +55,7 @@ def test_bohr_uses_one_explicit_conversion_convention(tmp_path):
 
 
 def test_unrelated_nnkp_is_not_an_implicit_input(tmp_path):
-    from core.inputs import load_wannier_data
+    from vasp_sawf.inputs import load_wannier_data
 
     seed = _tiny_seed(tmp_path)
     seed.with_suffix(".nnkp").write_text("unrelated invalid cache must not be read\n")
@@ -64,8 +64,8 @@ def test_unrelated_nnkp_is_not_an_implicit_input(tmp_path):
 
 
 def test_shifted_grid_has_explicit_unsupported_error(tmp_path):
-    from core.inputs import load_wannier_data
-    from core.inputs import InputValidationError
+    from vasp_sawf.inputs import load_wannier_data
+    from vasp_sawf.inputs import InputValidationError
 
     seed = _tiny_seed(tmp_path)
     win = seed.with_suffix(".win")
@@ -83,7 +83,7 @@ def test_real_compact_interfaces_keep_all_bands_and_neighbor_shifts(env_name, so
     seed = os.environ.get(env_name)
     if seed is None:
         pytest.skip(f"{env_name} is unset; local data are not used implicitly")
-    from core.inputs import load_wannier_data
+    from vasp_sawf.inputs import load_wannier_data
 
     root = Path(seed).parent
     before_names = {p.name for p in root.iterdir()}

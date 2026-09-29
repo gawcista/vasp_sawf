@@ -318,14 +318,14 @@ Inner products in this document are physical-state inner products. VASP's PAW (p
 - Ordinary data come from `reference/gauge_centers_spreads.npz` and `reference/bands_wannier.npz`. Provenance reports are `ordinary_report.json`, `archive_readback.json`, and `interpolation_report.json`. Their original bytes and hashes are preserved; old absolute paths record their locations at generation time. Ordinary path energies exactly match the ordinary arrays in the current model.
 - The existing comparison covers all 216 original-mesh k points, 96 operations, and all exported R. The off-mesh spot check uses 13 points from `default_rng(7)`. These 13 points alone are not a full-BZ proof; Eq. (20) supplies a separate model error bound.
 - An earlier independent check recomputed gauge and nearest-neighbor hopping relations using manually constructed C4z orbital/spinor matrices and J, without calling the project's validation functions or WannierBerri Dwann. The results agreed; the constant-Q invariant was also checked independently.
-- `core/localize.py` checks Eqs. (7) and (12) and exports the model with `symmetrize=False`; `core/bands.py` evaluates Eq. (14). WannierBerri 1.7.0's `Dwann.get_on_points` supplies the target representation, while `Rvectors` includes equivalent-image weights in the output matrices. See the [pinned SymmetrizerSAWF source](https://github.com/wannier-berri/wannier-berri/blob/v1.7.0/wannierberri/symmetry/sawf.py) for the target interface.
+- `vasp_sawf/localize.py` checks Eqs. (7) and (12) and exports the model with `symmetrize=False`; `vasp_sawf/bands.py` evaluates Eq. (14). WannierBerri 1.7.0's `Dwann.get_on_points` supplies the target representation, while `Rvectors` includes equivalent-image weights in the output matrices. See the [pinned SymmetrizerSAWF source](https://github.com/wannier-berri/wannier-berri/blob/v1.7.0/wannierberri/symmetry/sawf.py) for the target interface.
 
 This documentation revision clarifies the distinction between basis states and real-space functions, normalization, coordinates, complex conjugation, and theoretical matrix elements versus interpolation coefficients. Existing numerical results and physical conclusions are unchanged. No WAVECAR was read, UNK exported, localization rerun, threshold changed, or Hamiltonian averaged in post-processing.
 
 To redraw the existing English comparison figure from the development worktree:
 
 ```bash
-python plot_symmetry.py ../../runs/srvo3/reference/comparison.json --output ../../runs/srvo3/figures
+sawf-plot-symmetry ../../runs/srvo3/reference/comparison.json --output ../../runs/srvo3/figures
 ```
 
 The plotting script only reads saved values; it does not rerun physical checks.

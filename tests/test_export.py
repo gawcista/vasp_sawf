@@ -24,7 +24,7 @@ Startparameter for this run:
 
 
 def test_outcar_uses_effective_parameters_and_validates_spin_axes():
-    from core.symmetry import _outcar_spin_context
+    from vasp_sawf.symmetry import _outcar_spin_context
 
     report = _outcar_spin_context('LSORBIT = F\n' + _spin_outcar(), 2)
     assert report['LSORBIT'] is True
@@ -38,7 +38,7 @@ def test_outcar_uses_effective_parameters_and_validates_spin_axes():
 
 
 def test_nonfinite_final_magnetization_cannot_pass_zero_test():
-    from core.symmetry import _outcar_spin_context
+    from vasp_sawf.symmetry import _outcar_spin_context
 
     text = _spin_outcar().replace('magnetization 0.0000000', 'magnetization nan')
     with pytest.raises(ValueError, match='magnetic moment'):
@@ -46,7 +46,7 @@ def test_nonfinite_final_magnetization_cannot_pass_zero_test():
 
 
 def test_nonfinite_local_residual_cannot_disappear_in_maximum():
-    from core.symmetry import _finite_max
+    from vasp_sawf.symmetry import _finite_max
 
     for value in (np.nan, np.inf, -np.inf):
         with pytest.raises(ValueError, match='finite'):
@@ -64,7 +64,7 @@ def _accepted_sources():
 
 
 def test_reviewed_closure_is_accepted_automatically_without_changing_residual():
-    from core.symmetry import _check_coefficient_closure
+    from vasp_sawf.symmetry import _check_coefficient_closure
     report = {'residuals': {}, 'source_hashes': _accepted_sources()}
     _check_coefficient_closure(report, 2.589629272055618e-6)
     assert report['residuals']['ibz_coefficient_closure_relative_max'] == 2.589629272055618e-6
@@ -76,7 +76,7 @@ def test_reviewed_closure_is_accepted_automatically_without_changing_residual():
 
 @pytest.mark.parametrize('changed_source', ['win','amn','mmn','eig'])
 def test_acceptance_cannot_transfer_to_another_interface(changed_source):
-    from core.symmetry import _check_coefficient_closure
+    from vasp_sawf.symmetry import _check_coefficient_closure
     report = {'residuals': {}, 'source_hashes': _accepted_sources()}
     report['source_hashes'][changed_source] = 'different'
     with pytest.raises(ValueError, match='[Cc]oefficient closure'):
@@ -84,7 +84,7 @@ def test_acceptance_cannot_transfer_to_another_interface(changed_source):
 
 
 def test_same_material_cannot_hide_a_larger_closure_error():
-    from core.symmetry import _check_coefficient_closure
+    from vasp_sawf.symmetry import _check_coefficient_closure
     report = {'residuals': {}, 'source_hashes': _accepted_sources()}
     with pytest.raises(ValueError, match='[Cc]oefficient closure'):
         _check_coefficient_closure(report, 4e-6)
@@ -92,13 +92,13 @@ def test_same_material_cannot_hide_a_larger_closure_error():
 
 @pytest.mark.parametrize('value', [np.nan, np.inf, -1e-8])
 def test_invalid_closure_is_rejected_even_for_accepted_source(value):
-    from core.symmetry import _check_coefficient_closure
+    from vasp_sawf.symmetry import _check_coefficient_closure
     with pytest.raises(ValueError):
         _check_coefficient_closure({'residuals': {},'source_hashes': _accepted_sources()}, value)
 
 
 def test_unreviewed_small_residual_does_not_claim_physical_acceptance():
-    from core.symmetry import _check_coefficient_closure
+    from vasp_sawf.symmetry import _check_coefficient_closure
     report = {'residuals': {}, 'source_hashes': {'win':'other'}}
     _check_coefficient_closure(report, 1e-7)
     assert report['physical_acceptance_status'] == 'not_assessed'
@@ -106,7 +106,7 @@ def test_unreviewed_small_residual_does_not_claim_physical_acceptance():
 
 
 def test_closure_acceptance_never_bypasses_other_matrix_gates():
-    from core.symmetry import _check, _check_coefficient_closure
+    from vasp_sawf.symmetry import _check, _check_coefficient_closure
     report = {'residuals': {}, 'source_hashes': _accepted_sources()}
     _check_coefficient_closure(report, 2.589629272055618e-6)
     with pytest.raises(ValueError, match='mmn_covariance_max'):
@@ -114,7 +114,7 @@ def test_closure_acceptance_never_bypasses_other_matrix_gates():
 
 
 def test_atoms_are_read_from_win_with_units_and_species():
-    from core.symmetry import _cell_from_win
+    from vasp_sawf.symmetry import _cell_from_win
 
     lattice = np.eye(3) * 2
     template = '''num_bands=6\nnum_wann=6\nmp_grid=6 6 6
@@ -129,7 +129,7 @@ begin atoms_cart\nang\nSr 0 0 0\nV 1 1 1\nO 1 1 0\nend atoms_cart
 
 
 def test_failed_export_writes_not_ready_without_package(tmp_path):
-    from core.symmetry import export_symmetry
+    from vasp_sawf.symmetry import export_symmetry
 
     source = tmp_path / 'inputs'
     source.mkdir()
@@ -143,7 +143,7 @@ def test_failed_export_writes_not_ready_without_package(tmp_path):
 
 
 def test_source_failure_still_writes_not_ready_and_runtime(tmp_path):
-    from core.symmetry import export_symmetry
+    from vasp_sawf.symmetry import export_symmetry
 
     source = tmp_path / 'inputs'
     source.mkdir()
@@ -162,7 +162,7 @@ def test_source_failure_still_writes_not_ready_and_runtime(tmp_path):
 
 
 def test_export_never_overwrites_or_writes_into_original_input_tree(tmp_path):
-    from core.symmetry import export_symmetry
+    from vasp_sawf.symmetry import export_symmetry
 
     source = tmp_path / 'inputs'
     source.mkdir()
@@ -179,7 +179,7 @@ def test_export_never_overwrites_or_writes_into_original_input_tree(tmp_path):
 
 @pytest.mark.parametrize('suffix', ['win', 'amn', 'eig', 'mmn'])
 def test_export_protects_actual_parent_of_symlinked_interfaces(tmp_path, suffix):
-    from core.symmetry import export_symmetry
+    from vasp_sawf.symmetry import export_symmetry
 
     inputs, actual = tmp_path / 'inputs', tmp_path / 'actual'
     inputs.mkdir()
@@ -196,7 +196,7 @@ def test_export_protects_actual_parent_of_symlinked_interfaces(tmp_path, suffix)
 
 def test_spacegroup_arrays_roundtrip_without_pickle_and_reject_invalid_spin_lift():
     from irrep.spacegroup import SpaceGroup
-    from core.symmetry import _spacegroup_arrays
+    from vasp_sawf.symmetry import _spacegroup_arrays
 
     sg = SpaceGroup(Lattice=np.eye(3), spinor=True,
                     rotations=np.array([np.eye(3), np.eye(3)], dtype=int),
@@ -212,7 +212,7 @@ def test_spacegroup_arrays_roundtrip_without_pickle_and_reject_invalid_spin_lift
 
 def test_export_derives_dimension_and_species_from_inputs_before_spin_check(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    import core.symmetry as export
+    import vasp_sawf.symmetry as export
 
     source = tmp_path / 'input'
     source.mkdir()
@@ -242,7 +242,7 @@ def test_export_derives_dimension_and_species_from_inputs_before_spin_check(tmp_
 
 @pytest.mark.parametrize('shape', [(4, 2, 1), (4, 3, 3), (4, 0, 0)])
 def test_closed_spinor_subspace_rejects_rectangular_odd_and_empty_targets(shape):
-    from core.symmetry import _closed_spinor_dimension
+    from vasp_sawf.symmetry import _closed_spinor_dimension
 
     with pytest.raises(ValueError, match='positive even|equal'):
         _closed_spinor_dimension(np.zeros(shape))
@@ -250,7 +250,7 @@ def test_closed_spinor_subspace_rejects_rectangular_odd_and_empty_targets(shape)
 
 def test_grey_group_requires_partner_for_each_rotation_not_only_equal_counts():
     from irrep.spacegroup import SpaceGroup
-    from core.symmetry import _validate_grey_group
+    from vasp_sawf.symmetry import _validate_grey_group
 
     identity = np.eye(3, dtype=int)
     inversion = -identity

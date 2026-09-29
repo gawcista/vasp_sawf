@@ -16,7 +16,7 @@ def _set_edges(seed, edges):
 
 
 def test_anisotropic_cell_uses_only_supplied_mmn_edges(tmp_path):
-    from core.inputs import load_wannier_data
+    from vasp_sawf.inputs import load_wannier_data
 
     seed = _tiny_seed(tmp_path)
     win = seed.with_suffix(".win")
@@ -35,8 +35,8 @@ def test_anisotropic_cell_uses_only_supplied_mmn_edges(tmp_path):
 
 
 def test_incomplete_existing_edges_are_rejected(tmp_path):
-    from core.inputs import InputValidationError
-    from core.inputs import load_wannier_data
+    from vasp_sawf.inputs import InputValidationError
+    from vasp_sawf.inputs import load_wannier_data
 
     seed = _tiny_seed(tmp_path)
     _set_edges(seed, [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0)])
@@ -45,8 +45,8 @@ def test_incomplete_existing_edges_are_rejected(tmp_path):
 
 
 def test_redundant_shells_are_rejected_before_unstable_inverse(tmp_path):
-    from core.inputs import InputValidationError
-    from core.inputs import load_wannier_data
+    from vasp_sawf.inputs import InputValidationError
+    from vasp_sawf.inputs import load_wannier_data
 
     seed = _tiny_seed(tmp_path)
     win = seed.with_suffix(".win")
@@ -58,8 +58,8 @@ def test_redundant_shells_are_rejected_before_unstable_inverse(tmp_path):
 
 
 def test_zero_displacement_is_not_silently_dropped(tmp_path):
-    from core.inputs import InputValidationError
-    from core.inputs import load_wannier_data
+    from vasp_sawf.inputs import InputValidationError
+    from vasp_sawf.inputs import load_wannier_data
 
     seed = _tiny_seed(tmp_path)
     _set_edges(seed, [(0, 0, 0), (1, 0, 0), (-1, 0, 0), (0, 1, 0),
@@ -69,8 +69,8 @@ def test_zero_displacement_is_not_silently_dropped(tmp_path):
 
 
 def test_official_shell_filter_cannot_discard_a_supplied_edge(tmp_path):
-    from core.inputs import InputValidationError
-    from core.inputs import load_wannier_data
+    from vasp_sawf.inputs import InputValidationError
+    from vasp_sawf.inputs import load_wannier_data
 
     seed = _tiny_seed(tmp_path)
     win = seed.with_suffix(".win")
@@ -81,7 +81,7 @@ def test_official_shell_filter_cannot_discard_a_supplied_edge(tmp_path):
 
 @pytest.mark.real_data
 def test_tsns_weights_match_independent_original_wannier90_output():
-    from core.inputs import load_wannier_data
+    from vasp_sawf.inputs import load_wannier_data
 
     seed = os.environ.get("SAWF_TSNS_SEED")
     if seed is None:

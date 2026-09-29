@@ -12,7 +12,7 @@ def main():
     parser.add_argument('--outcar', required=True, type=Path, help='OUTCAR from the same interface calculation')
     parser.add_argument('--output', required=True, type=Path, help='New symmetry package output directory')
     args = parser.parse_args()
-    from core.symmetry import export_symmetry
+    from vasp_sawf.symmetry import export_symmetry
     try:
         report = export_symmetry(args.seed, args.wavecar, args.outcar, args.output)
     except (ValueError, OSError, RuntimeError) as error:

@@ -23,6 +23,15 @@ An existing Python 3.6 environment cannot run this release. Activate an existing
 
 References: [MPCDF environment modules](https://docs.mpcdf.mpg.de/faq/hpc_software.html), [ADA documentation](https://docs.mpcdf.mpg.de/doc/computing/clusters/systems/MPSD_PKS_ADA.html), [Python 3.13 stack announcement](https://docs.mpcdf.mpg.de/bnb/pdf/bits_and_bytes_issue_219.pdf), and [Python virtual environments](https://docs.python.org/3.13/library/venv.html).
 
+### Why Python 3.14 is rejected
+
+The reported error `Python: 3.14.6 not in '<3.14,>=3.13'` cannot be fixed by removing this project's upper bound alone. The current dependencies have independent incompatibilities:
+
+- Numba 0.62.1 explicitly rejects Python >=3.14 in its [version guard](https://github.com/numba/numba/blob/0.62.1/setup.py#L20-L48), including source builds. Its [official support table](https://numba.readthedocs.io/en/0.62.1/user/installing.html#version-support-information) lists Python >=3.10,<3.14. PyPI's less restrictive `Requires-Python: >=3.10` metadata does not override that build-time guard.
+- Ray 2.51.1 provides no CPython 3.14 wheel and no source distribution on [PyPI](https://pypi.org/project/ray/2.51.1/#files). Its [fixed-version build script](https://github.com/ray-project/ray/blob/ray-2.51.1/python/setup.py) also limits supported Python versions to 3.9-3.13. Ray is required here because WannierBerri 1.7.0's `wannierise/wannierizer.py` imports it even for this serial workflow.
+
+These conditions were checked against official release metadata and source on 2026-10-01. Executing only Numba's upstream version guard with a simulated Python 3.14.6 version reproduced its rejection; this was not a native Python 3.14 installation test. The existing pins and upper bound remain unchanged. Use a Python 3.13 environment for the current release. Supporting Python 3.14 requires a separately checked dependency set, real installation and import tests under that interpreter, and numerical regression before changing the advertised support range. Removing version guards or using `--ignore-requires-python` would not provide that compatibility.
+
 ### Optional: reproduce the full artifact lock
 
 For the audited Linux x86_64 / CPython 3.13 dependency set, install the lock first and then install this project without resolving dependencies again:

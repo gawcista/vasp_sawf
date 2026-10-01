@@ -6,7 +6,7 @@ Repository: [gawcista/vasp_sawf](https://github.com/gawcista/vasp_sawf). No calc
 
 ## Install in your current environment
 
-The current release requires Python 3.13 (`>=3.13,<3.14`). With your chosen compatible environment active:
+The current release requires Python 3.13 (`>=3.13,<3.14`). The upper bound reflects actual incompatibilities in the pinned Numba and Ray versions, not only the range tested locally; see the [Python 3.14 explanation](DEPLOY_ADA.md#why-python-314-is-rejected). With your chosen compatible environment active:
 
 ```bash
 git clone https://github.com/gawcista/vasp_sawf.git

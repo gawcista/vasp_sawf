@@ -223,6 +223,39 @@ $$
 
 For example, $C_{4z}$ maps the x-direction neighbor to the y-direction neighbor, requiring $H_{(010)}=O_{C_{4z}}H_{(100)}O_{C_{4z}}^\dagger$. Orbital and spinor components must both transform; the two matrices need not be elementwise equal. Pure TR requires $H_R=JH_R^*J^\dagger$, with no additional $R\to-R$. The d orbitals here have even inversion parity, giving $H_{-R}=H_R$. Combined with Hermiticity, $H_{-R}=H_R^\dagger$, this makes each $H_R$ Hermitian. A Hermitian matrix equals its complex-conjugate transpose, a basic requirement for real energy eigenvalues.
 
+## General Seitz operations in extraction and SAWF
+
+The extraction and localization code now retains the translational part of a general Seitz operation $g=\{S_g|t_g\}\Theta^{a_g}$. This includes screws, glides, centering translations, and nonzero translations introduced by an origin shift. It retains the same full-Bloch sewing convention in Eq. (5); it does not replace native VASP PAW overlaps with pseudowavefunction overlaps. The numerical SrVO3 results elsewhere in this document still refer to the original calculation, not to a newly validated tSnS model.
+
+For a stored MMN edge, define the full fractional reciprocal displacement $b=k_l+G_{\rm edge}-k$, including the integer reciprocal shift from the MMN header. Write $gb=(-1)^{a_g}S_g^{-T}b$ without folding this displacement. The overlap covariance used for transport and independent all-edge checking is
+
+$$
+d_g(k)^\dagger M(gk,gb)d_g(l)
+=\exp[-2\pi i (gb)\cdot t_g]\,\mathcal C_g[M(k,b)].
+$$
+
+Here $l$ labels the stored neighbor k point; its periodic continuation is determined by $G_{\rm edge}$. Dropping that shift, or folding $b$ modulo integers, can change the phase for a fractional translation. The independent plane-wave check also multiplies each transformed component by $\exp[-2\pi i q'\cdot t_g]$, where $q'=(-1)^{a_g}S_g^{-T}(k+G)$ is the transformed full plane-wave momentum. This phase can be nontrivial even at Gamma because $G\cdot t_g$ need not be an integer.
+
+Let $p$ be the stored representative of the product $gh$, and let $L_{gh}=t_g+S_gt_h-t_p$ be its integer lattice displacement. With the spinor multiplication factor $z_{gh}=\pm1$ returned by IrRep, the checked composition law is
+
+$$
+d_g(hk)\,\mathcal C_g[d_h(k)]
+=z_{gh}\exp[-2\pi i(pk)\cdot L_{gh}]d_p(k).
+$$
+
+Because $L_{gh}$ is an integer vector, the final momentum $pk$ may be folded consistently here. For a spinful $2_1$ screw along b this becomes $d_s(sk)d_s(k)=-\exp(-2\pi i k_y)I$, giving $-I$ at Gamma and $+I$ at $k_y=1/2$. These are algebraic reference cases, not measured tSnS results.
+
+Target representations are built from complete WannierBerri site orbits and retain the permutations between centers and integer shifts into neighboring cells. Multiple inequivalent target orbits can be supplied explicitly. Original SCDM amplitudes undergo only the recorded reversible initialization transform
+
+$$
+U_{\rm init}(k)=\operatorname{polar}[A_{\rm SCDM}(k)]\,P\,S(k)^\dagger Q,
+\qquad S_{jj}(k)=\exp[-2\pi i k\cdot n_j].
+$$
+
+$P$ reorders the original columns into the chosen target order, $n_j$ is the selected integer cell shift after that permutation, and $Q$ intertwines the complete Gamma representations, including TR. Matching centers uses the Cartesian lattice metric and only selects an initial guess; it does not establish representation compatibility. Original AMN entries remain unchanged. A rank-deficient initial intertwiner is reported as an initialization failure, not as proof that the physical subspace cannot support the target.
+
+Final centers are checked against WannierBerri's affine center-symmetry constraints. Symmetry-allowed free coordinates may relax; they are not forced to equal the input representative position. Full-mesh gauge covariance and on/off-mesh Hamiltonian covariance use all target blocks. The single-center SrVO3 formulas below are the corresponding special case with $P=I$.
+
 ## Comparing ordinary Wannier functions with SAWF
 
 The ordinary reference uses unconstrained WannierBerri localization with the same VASP SCDM AMN/MMN/EIG files as SAWF. It is not the result of a separate run of the Wannier90 executable. The comparison reads existing gauges and real-space matrices; it does not rerun localization or read WAVECAR.

@@ -5,7 +5,6 @@ import re
 import numpy as np
 from collections import deque
 from importlib.metadata import version
-import copy
 from dataclasses import asdict
 from decimal import Decimal
 import hashlib
@@ -15,7 +14,7 @@ import platform
 import resource
 import time
 from .inputs import _win_sections, read_inputs
-from .wavecar import inspect_wavecar, read_selected_wavecar
+from .wavecar import inspect_wavecar
 
 
 # OUTCAR prints reciprocal coordinates with six decimals; this is not a physics gate.
@@ -131,10 +130,8 @@ def parse_outcar_kpoint_map(text):
 
 
 def build_symmetry_maps(bundle, spacegroup):
-    """Check all k-point folding and neighbor G shifts; currently accept only zero-translation operations."""
+    """Check the complete k-point permutation and full MMN neighbor vectors, including G shifts."""
     operations = spacegroup.symmetries
-    if any(np.max(abs(op.translation)) > 1e-12 for op in operations):
-        raise ValueError('Nonzero translations have not been validated for MMN anchor adaptation; phases are not silently ignored')
     mesh = bundle.mesh
     address = np.rint(bundle.kpoints*mesh).astype(int) % mesh
     if np.max(abs(bundle.kpoints*mesh-np.rint(bundle.kpoints*mesh))) > 1e-8:
@@ -165,9 +162,25 @@ def build_symmetry_maps(bundle, spacegroup):
     return np.array(kmap), np.array(emap)
 
 
+def mmn_translation_phases(bundle, spacegroup):
+    """Return exp[-2*pi*i*(g b).t] for each full reciprocal MMN edge and Seitz operation."""
+    vectors = (bundle.kpoints[bundle.neighbor_indices] + bundle.neighbor_shifts
+               - bundle.kpoints[:, None])
+    phases = []
+    for operation in spacegroup.symmetries:
+        translation = np.asarray(operation.translation)
+        if translation.shape != (3,) or not np.isfinite(translation).all():
+            raise ValueError('Invalid spatial translation for MMN phases')
+        phases.append(np.exp(-2j * np.pi * (operation.transform_k(vectors) @ translation)))
+    result = np.asarray(phases)
+    if not np.isfinite(result).all():
+        raise ValueError('MMN translation phases contain nonfinite values')
+    return result
+
+
 def transport_sewing(mmn, neighbors, kmap, edge_map, time_reversals, anchors,
-                     *, anchor_k=0, reverse_edges=False):
-    """Solve M(gk,gb)d(l)=d(k)M(k,b)^{*a} without unitarizing or averaging inputs.
+                     *, anchor_k=0, reverse_edges=False, edge_phases=None):
+    """Solve M(gk,gb)d(l)=exp[-2*pi*i*(gb).t]d(k)M(k,b)^{*a} without altering inputs.
 
     The tree only generates candidates; all-edge residuals independently check them, and wavefunction anchors require separate validation.
     """
@@ -177,6 +190,11 @@ def transport_sewing(mmn, neighbors, kmap, edge_map, time_reversals, anchors,
     anchors = np.asarray(anchors, complex)
     nk, nnb, nb, nb2 = mmn.shape
     ns = len(anti)
+    phases = (np.ones((ns, nk, nnb), complex) if edge_phases is None
+              else np.asarray(edge_phases, complex))
+    if (phases.shape != (ns, nk, nnb) or not np.isfinite(phases).all()
+            or np.max(abs(abs(phases) - 1)) > 1e-12):
+        raise ValueError('MMN translation phases must have the edge shape and unit modulus')
     if (nb != nb2 or neighbors.shape != (nk,nnb) or kmap.shape != (ns,nk)
             or edge_map.shape != (ns,nk,nnb) or anchors.shape != (ns,nb,nb)
             or not 0 <= anchor_k < nk):
@@ -215,13 +233,14 @@ def transport_sewing(mmn, neighbors, kmap, edge_map, time_reversals, anchors,
     d[:,anchor_k]=anchors
     for k,e,target in tree:
         original=mmn[k,e]
-        rhs=d[:,k] @ np.where(anti[:,None,None],original.conj(),original)
+        rhs=phases[:,k,e,None,None] * (d[:,k] @ np.where(anti[:,None,None],original.conj(),original))
         d[:,target]=np.linalg.solve(mmn[kmap[:,k],edge_map[:,k,e]],rhs)
     errors=[]
     for s in range(ns):
         mg=mmn[kmap[s,:,None],edge_map[s]]
         reconstructed=d[s,:,None].swapaxes(-1,-2).conj() @ mg @ d[s,neighbors]
-        errors.append(float(np.max(abs(reconstructed-(mmn.conj() if anti[s] else mmn)))))
+        reference = phases[s,:,:,None,None] * (mmn.conj() if anti[s] else mmn)
+        errors.append(float(np.max(abs(reconstructed-reference))))
     return d, {'mmn_covariance_max':max(errors), 'mmn_covariance_per_operation':errors,
                'unitarity_max':float(np.max(abs(d.swapaxes(-1,-2).conj()@d-np.eye(nb)))),
                'min_edge_singular':float(singular.min()),
@@ -241,7 +260,7 @@ def make_symmetrizer(bundle, spacegroup, d):
     irr=select_irreducible(bundle.kpoints,spacegroup)
     mapping,k2irr,from_sym=get_mapping_irr(bundle.kpoints,irr,spacegroup)
     dic={'D_wann_block_indices':np.zeros((0,2),int),'_NB':nb,'_NK':nk,
-         'num_wann':0,'comment':'Same-run WAVECAR anchors and native VASP PAW MMN; complete raw six-dimensional representation',
+         'num_wann':0,'comment':'Same-run WAVECAR anchors and native VASP PAW MMN; complete raw selected-band representation',
          'kptirr':irr,'kptirr2kpt':mapping,'kpt2kptirr':k2irr,
          'kpt2kptirr_sym':from_sym,'kpt_from_kptirr_isym':from_sym,
          'NKirr':len(irr),'Nsym':spacegroup.size,
@@ -256,16 +275,29 @@ def make_symmetrizer(bundle, spacegroup, d):
     return sym
 
 
-def group_residuals(d,kmap,time_reversals,product_table,spinor_factors):
-    """Compose zero-translation double-group operations over the full grid, retaining antiunitary conjugation."""
+def group_residuals(d,kmap,time_reversals,product_table,spinor_factors,
+                    *, kpoints=None, translations_diff=None):
+    """Check Seitz products with lattice-translation phases and antiunitary conjugation."""
     if not np.isfinite(d).all() or not np.isfinite(spinor_factors).all():
         raise ValueError('Group-composition input contains nonfinite values')
+    if (kpoints is None) != (translations_diff is None):
+        raise ValueError('Group-composition k points and translation differences must be provided together')
+    if kpoints is not None:
+        kpoints, translations_diff = map(np.asarray, (kpoints, translations_diff))
+        if (kpoints.shape != (d.shape[1], 3) or translations_diff.shape != (len(d), len(d), 3)
+                or not np.isfinite(kpoints).all() or not np.isfinite(translations_diff).all()
+                or np.max(abs(translations_diff - np.rint(translations_diff))) > 1e-12):
+            raise ValueError('Group-composition k points or lattice translation differences are invalid')
     maximum=0.0
     worst=None
     for g in range(len(d)):
         second=d.conj() if time_reversals[g] else d
         lhs=d[g,kmap] @ second
         rhs=spinor_factors[g,:,None,None,None]*d[product_table[g]]
+        if kpoints is not None:
+            phase = np.exp(-2j * np.pi * np.einsum('hki,hi->hk',
+                           kpoints[kmap[product_table[g]]], translations_diff[g]))
+            rhs = rhs * phase[:,:,None,None]
         difference=abs(lhs-rhs)
         if not np.isfinite(difference).all():
             raise ValueError('Group-composition residual contains nonfinite values')
@@ -290,16 +322,26 @@ def _closed_spinor_dimension(amn):
 
 def _validate_grey_group(spacegroup):
     operations = spacegroup.symmetries
-    if not operations or any(np.max(abs(op.translation)) > 1e-12 for op in operations):
-        raise ValueError('Only complete grey groups containing pure TR and zero spatial translations are currently supported')
-    unitary = [tuple(op.rotation.ravel()) for op in operations if not op.time_reversal]
-    anti = [tuple(op.rotation.ravel()) for op in operations if op.time_reversal]
-    identity = tuple(np.eye(3, dtype=int).ravel())
-    if (len(set(unitary)) != len(unitary) or len(set(anti)) != len(anti)
-            or set(unitary) != set(anti) or identity not in unitary):
+    if not operations or any(not np.isfinite(op.translation).all() for op in operations):
+        raise ValueError('A complete grey group with finite spatial translations and pure TR is required')
+    unitary = [op for op in operations if not op.time_reversal]
+    anti = [op for op in operations if op.time_reversal]
+
+    def same_spatial(left, right):
+        return (np.array_equal(left.rotation, right.rotation)
+                and np.max(abs(_periodic_delta(left.translation - right.translation))) <= 1e-12)
+
+    if (not unitary or len(unitary) != len(anti)
+            or any(sum(same_spatial(op, other) for other in unitary) != 1 for op in unitary)
+            or any(sum(same_spatial(op, other) for other in anti) != 1 for op in anti)
+            or any(sum(same_spatial(op, other) for other in anti) != 1 for op in unitary)):
         raise ValueError('A grey group requires unique spatial operations in one-to-one correspondence with their TR partners')
-    return next(i for i, op in enumerate(operations)
-                if op.time_reversal and tuple(op.rotation.ravel()) == identity)
+    identity = [i for i, op in enumerate(operations)
+                if np.array_equal(op.rotation, np.eye(3, dtype=int))
+                and np.max(abs(op.translation)) <= 1e-12]
+    if len(identity) != 2 or sum(operations[i].time_reversal for i in identity) != 1:
+        raise ValueError('A grey group must contain the spatial identity and pure TR with zero translation')
+    return next(i for i in identity if operations[i].time_reversal)
 
 
 def _cell_from_win(text, lattice):
@@ -380,6 +422,8 @@ def _independent_transform(point, operation):
     lookup = {tuple(v): i for i, v in enumerate(g)}
     order = np.empty(len(g), int)
     for source, target in enumerate(target_g):
+        if tuple(target) not in lookup:
+            raise ValueError('Little-group G mapping is not a complete bijection')
         order[lookup[tuple(target)]] = source
     if len(set(map(tuple, target_g))) != len(g):
         raise ValueError('Little-group G mapping is not a complete bijection')
@@ -387,7 +431,10 @@ def _independent_transform(point, operation):
     spin = operation.spinor_rotation
     if operation.time_reversal:
         spin = np.array([[0, 1], [-1, 0]]) @ spin.conj()
-    return np.einsum('ts,mgs->mgt', spin, coefficients[:, order])
+    phase = np.exp(-2j * np.pi * ((g + point.k) @ operation.translation))
+    transformed = np.einsum('ts,mgs->mgt', spin, coefficients[:, order])
+    transformed *= phase[None, :, None]
+    return transformed
 
 
 def _check(residuals, name, value, tolerance=_GATE):
@@ -448,7 +495,7 @@ def _spacegroup_arrays(spacegroup):
     rotations, translations, anti, spin = (arrays[k] for k in
                                            ('rotations', 'translations', 'time_reversals', 'spinor_rotations'))
     if (rotations.shape != (ns, 3, 3) or not np.issubdtype(rotations.dtype, np.integer)
-            or translations.shape != (ns, 3) or np.max(abs(translations)) > 1e-12
+            or translations.shape != (ns, 3)
             or anti.shape != (ns,) or anti.dtype != np.dtype(bool) or not np.any(anti)
             or spin.shape != (ns, 2, 2)
             or np.max(abs(spin.conj().swapaxes(-1, -2) @ spin - np.eye(2))) > 1e-12):
@@ -464,7 +511,7 @@ def _spacegroup_arrays(spacegroup):
     return arrays
 
 
-def export_symmetry(seed, wavecar, outcar, output_dir):
+def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_gb=None):
     """Export Bloch representations and apply approved coefficient-closure decisions without bypassing other checks."""
     started = time.perf_counter()
     seed, wavecar, outcar = (Path(p).resolve() for p in (seed, wavecar, outcar))
@@ -482,6 +529,18 @@ def export_symmetry(seed, wavecar, outcar, output_dir):
     residuals = report['residuals']
     try:
         from irrep.spacegroup import SpaceGroup
+        import os
+        from .wavecar import inspect_selected_wavecar, estimate_wavecar_memory, verify_wavecar_source
+        from .extraction import available_memory_bytes, worker_plan, evaluate_kpoint, evaluate_kpoints, record_kpoint_result
+        if workers is not None and (isinstance(workers, bool) or not isinstance(workers, int) or workers < 1):
+            raise ValueError('workers must be a positive integer')
+        if memory_gb is not None and (not np.isfinite(memory_gb) or memory_gb <= 0):
+            raise ValueError('memory-gb must be finite and positive')
+        stage_started = time.perf_counter()
+        report['stage_seconds'] = {}
+        report['active_stage'] = 'input_and_metadata'
+        report['read_accounting_complete'] = False
+        report['peak_rss_scope'] = 'peak_rss_kib is the parent process; per-k worker peaks are lifetime process maxima, not simultaneous node RSS'
         header = inspect_wavecar(wavecar)
         report['header_preflight_read_bytes'] = 128
         bundle = read_inputs(seed, source_nb=header.num_bands)
@@ -509,26 +568,29 @@ def export_symmetry(seed, wavecar, outcar, output_dir):
                                              antiunitary=sum(bool(op.time_reversal) for op in operations))
         kmap, edge_map = build_symmetry_maps(bundle, sg)
         anti = np.array([op.time_reversal for op in operations], dtype=bool)
-        stored = read_selected_wavecar(wavecar, bands_1based=bundle.bands_vasp_1based,
-                                       kpoints_1based=None, lattice=bundle.lattice)
-        report['wavecar'] = asdict(stored.header)
-        report['wavecar']['lattice'] = stored.header.lattice.tolist()
-        stat = wavecar.stat()
-        report['wavecar'].update(path=str(wavecar), size_bytes=stat.st_size, mtime_ns=stat.st_mtime_ns,
-                                 whole_file_hash_computed=False)
-        report['read_ledger'] = list(stored.read_ledger)
-        report['read_bytes'] = sum(row['bytes_returned'] for row in stored.read_ledger)
+        phases = mmn_translation_phases(bundle, sg)
+        metadata = inspect_selected_wavecar(wavecar, bands_1based=bundle.bands_vasp_1based,
+                                            lattice=bundle.lattice)
+        if (metadata.header.num_bands != header.num_bands or metadata.header.num_kpoints != header.num_kpoints
+                or metadata.header.record_bytes != header.record_bytes):
+            raise ValueError('WAVECAR header changed during metadata inspection')
+        report['wavecar'] = asdict(metadata.header)
+        report['wavecar']['lattice'] = metadata.header.lattice.tolist()
+        report['wavecar'].update(metadata.source_identity, whole_file_hash_computed=False)
+        report['metadata_read_ledger'] = list(metadata.read_ledger)
+        report['metadata_read_bytes'] = sum(row['bytes_returned'] for row in metadata.read_ledger)
         report['coefficient_storage_dtype'] = 'complex64'
         report['computation_dtype'] = 'complex128_lossless_copy'
-        report['bands_vasp_1based'] = list(stored.bands_1based)
-        raw_k = np.array([point.k for point in stored.kpoints])
+        report['bands_vasp_1based'] = list(metadata.bands_1based)
+        report['coefficient_counts_including_spinor'] = list(metadata.coefficient_counts)
+        raw_k = metadata.kpoints
         if np.max(abs(raw_k - table.ibz_kpoints)) > 5.1e-7:
             raise ValueError('WAVECAR k-point coordinates/order disagree with the actual OUTCAR IBZ source')
         reverse_permutation = np.argsort(interface_to_outcar)
         ibz_interface = reverse_permutation[np.arange(header.num_kpoints)]
         if np.max(abs(raw_k - bundle.kpoints[ibz_interface])) > 1e-11:
             raise ValueError('WAVECAR IBZ coordinates or folding disagree with the actual interface representatives')
-        raw_energies = np.array([point.Energy_raw for point in stored.kpoints])
+        raw_energies = metadata.energies
         expected_eig = raw_energies[table.source_ibz[interface_to_outcar]]
         serialized = [line.split()[2] for line in Path(f'{seed}.eig').read_text().splitlines() if line.strip()]
         exponents = {Decimal(token).as_tuple().exponent for token in serialized}
@@ -537,47 +599,88 @@ def export_symmetry(seed, wavecar, outcar, output_dir):
         eig_tolerance = .5 * 10. ** next(iter(exponents)) + 8 * np.finfo(float).eps * max(1., abs(bundle.eig).max())
         report['eig_serialization_tolerance_ev'] = float(eig_tolerance)
         _check(residuals, 'wavecar_interface_energy_max_ev', np.max(abs(expected_eig-bundle.eig)), eig_tolerance)
-        points = []
-        for raw in stored.kpoints:
-            point = copy.copy(raw)
-            point.WF = raw.WF.astype(np.complex128)
-            if not np.array_equal(point.WF.astype(np.complex64), raw.WF):
-                raise ValueError('Precision conversion of the working copy changed original coefficients')
-            points.append(point)
         gamma_rows = np.flatnonzero(np.max(abs(raw_k), axis=1) < 1e-12)
         if len(gamma_rows) != 1:
             raise ValueError('Exactly one stored Gamma anchor is required')
         gamma_ibz = int(gamma_rows[0])
         gamma = int(ibz_interface[gamma_ibz])
-        anchors = np.array([points[gamma_ibz].symm_matrix(points[gamma_ibz], op,
-                            block_indices=np.array([[0, nb]]), unitary=False)[0] for op in operations])
-        d, transport = transport_sewing(bundle.mmn, bundle.neighbor_indices, kmap, edge_map, anti, anchors, anchor_k=gamma)
+        little_indices = [np.flatnonzero(kmap[:, ik] == ik).tolist() for ik in ibz_interface]
+        if len(little_indices[gamma_ibz]) != len(operations):
+            raise ValueError('Gamma must be fixed by every spatial and antiunitary operation')
+        affinity_cpus = len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else (os.cpu_count() or 1)
+        allocated = min(affinity_cpus, int(os.environ.get('SLURM_CPUS_PER_TASK', str(affinity_cpus))))
+        requested = workers if workers is not None else int(os.environ.get('SLURM_CPUS_PER_TASK', '1'))
+        try:
+            budget = available_memory_bytes()
+        except ValueError:
+            if memory_gb is None:
+                raise
+            budget = int(memory_gb * 1024**3)
+        if memory_gb is not None:
+            budget = min(budget, int(memory_gb * 1024**3))
+        estimate = estimate_wavecar_memory(metadata)
+        plan = worker_plan(requested=requested, allocated_cpus=allocated, jobs=max(1, len(raw_k)-1),
+                           memory_bytes=budget, per_worker_bytes=estimate['per_worker_estimated_bytes'])
+        report['memory_estimate'] = estimate_wavecar_memory(metadata, workers=plan['workers'])
+        report['execution'] = plan
+        report['stage_seconds']['input_and_metadata'] = time.perf_counter() - stage_started
+        print(f"Selected {nb} bands at {len(raw_k)} stored k points; "
+              f"max NG={estimate['max_gvectors']}; workers={plan['workers']}; "
+              f"estimated worker memory={estimate['per_worker_estimated_bytes']/1024**3:.2f} GiB", flush=True)
+        stage_started = time.perf_counter()
+        report['active_stage'] = 'gamma_anchor'
+        group_dict = sg.as_dict()
+        gamma_result = evaluate_kpoint(wavecar, metadata.bands_1based, bundle.lattice, gamma_ibz+1,
+                                       group_dict, little_indices[gamma_ibz], metadata.source_identity, gamma=True)
+        record_kpoint_result(report, gamma_result)
+        anchors = gamma_result['matrices']
+        # Gamma is evaluated first; use its measured high-water mark conservatively.
+        calibrated_worker_bytes = max(estimate['per_worker_estimated_bytes'], gamma_result['peak_rss_kib'] * 1024)
+        try:
+            budget = min(budget, available_memory_bytes())
+        except ValueError:
+            pass
+        plan = worker_plan(requested=requested, allocated_cpus=allocated, jobs=max(1, len(raw_k)-1),
+                           memory_bytes=budget, per_worker_bytes=calibrated_worker_bytes)
+        report['execution'] = {**plan, 'gamma_process_peak_rss_kib': gamma_result['peak_rss_kib'],
+                               'calibration_scope': 'Parent process including Gamma; other k points may have different peaks'}
+        report['memory_estimate'] = estimate_wavecar_memory(metadata, workers=plan['workers'])
+        print(f"Gamma checked; continuing with {plan['workers']} worker processes", flush=True)
+        report['stage_seconds']['gamma_anchor'] = time.perf_counter() - stage_started
+        stage_started = time.perf_counter()
+        report['active_stage'] = 'mmn_transport'
+        d, transport = transport_sewing(bundle.mmn, bundle.neighbor_indices, kmap, edge_map, anti, anchors, anchor_k=gamma, edge_phases=phases)
         report['transport'] = transport
         _check(residuals, 'mmn_covariance_max', transport['mmn_covariance_max'])
         _check(residuals, 'unitarity_max', transport['unitarity_max'])
         backwards, _ = transport_sewing(bundle.mmn, bundle.neighbor_indices, kmap, edge_map, anti, anchors,
-                                         anchor_k=gamma, reverse_edges=True)
+                                         anchor_k=gamma, reverse_edges=True, edge_phases=phases)
         _check(residuals, 'reverse_tree_difference_max', np.max(abs(d-backwards)))
+        report['stage_seconds']['mmn_transport'] = time.perf_counter() - stage_started
+        stage_started = time.perf_counter()
+        report['active_stage'] = 'remaining_ibz_checks'
+        tasks = [(wavecar, metadata.bands_1based, bundle.lattice, ik+1, group_dict,
+                  little_indices[ik], metadata.source_identity) for ik in range(len(raw_k)) if ik != gamma_ibz]
+        results = [gamma_result]
+        for result in evaluate_kpoints(tasks, workers=plan['workers']):
+            results.append(result)
+            record_kpoint_result(report, result)
+            print(f"Checked stored k point {result['kpoint_1based']}/{len(raw_k)}", flush=True)
+        report['stage_seconds']['remaining_ibz_checks'] = time.perf_counter() - stage_started
+        report['read_accounting_complete'] = True
+        results.sort(key=lambda result: result['kpoint_1based'])
         ibz_difference = closure = gamma_lstsq = 0.
         checked = 0
-        for point, ik in zip(points, ibz_interface, strict=True):
-            wf = point.WF.reshape(nb, -1)
-            for isym, operation in enumerate(operations):
-                if kmap[isym, ik] != ik:
-                    continue
-                local = point.symm_matrix(point, operation, block_indices=np.array([[0, nb]]), unitary=False)[0]
-                transformed = _independent_transform(point, operation).reshape(nb, -1)
-                if not np.isfinite(local).all() or not np.isfinite(transformed).all():
-                    raise ValueError('Raw IBZ sewing matrices or independently transformed coefficients contain nonfinite values')
-                norm = np.linalg.norm(transformed)
-                if not np.isfinite(norm) or norm <= 0:
-                    raise ValueError('Independently transformed IBZ coefficient norms are nonfinite or zero')
-                closure = _finite_max(closure, float(np.linalg.norm(local.T @ wf-transformed) / norm))
+        for result in results:
+            ik = ibz_interface[result['kpoint_1based']-1]
+            for isym, local in zip(result['little_indices'], result['matrices'], strict=True):
                 ibz_difference = _finite_max(ibz_difference, float(np.max(abs(local-d[isym, ik]))))
-                if ik == gamma:
-                    direct = np.linalg.lstsq(wf.T, transformed.T, rcond=None)[0]
-                    gamma_lstsq = _finite_max(gamma_lstsq, float(np.max(abs(local-direct))))
                 checked += 1
+            closure = _finite_max(closure, result['closure'])
+            gamma_lstsq = _finite_max(gamma_lstsq, result['gamma_lstsq'])
+        verify_wavecar_source(wavecar, metadata.source_identity)
+        stage_started = time.perf_counter()
+        report['active_stage'] = 'final_validation_and_export'
         report['independent_ibz_little_checks'] = checked
         _check(residuals, 'ibz_little_difference_max', ibz_difference)
         _check_coefficient_closure(report, closure)
@@ -585,7 +688,8 @@ def export_symmetry(seed, wavecar, outcar, output_dir):
         energy_covariance = np.max(abs(bundle.eig[kmap, :, None] * d - d * bundle.eig[None, :, None, :]))
         _check(residuals, 'energy_covariance_max_ev', energy_covariance)
         sym = make_symmetrizer(bundle, sg, d)
-        product = group_residuals(d, kmap, anti, sym.sym_product_table, sym.spinor_factors)
+        product = group_residuals(d, kmap, anti, sym.sym_product_table, sym.spinor_factors,
+                                  kpoints=bundle.kpoints, translations_diff=sym.translations_diff)
         report['group'] = product
         _check(residuals, 'group_composition_max', product['group_composition_max'])
         t = pure_t
@@ -599,15 +703,21 @@ def export_symmetry(seed, wavecar, outcar, output_dir):
         package = (output / 'bloch.npz').read_bytes()
         report['bloch_sha256'] = hashlib.sha256(package).hexdigest()
         report['bloch_bytes'] = len(package)
+        report['stage_seconds']['final_validation_and_export'] = time.perf_counter() - stage_started
+        report.pop('active_stage')
         report.update(status='ready', sawf_ready=True,
                       numerical_checks_passed=True,
                       numerical_checks_scope='All provenance/representation/PAW MMN numerical checks; coefficient F-closure reference results are reported separately',
                       gauge_status='verified_mmn_anchor_transport',
                       full_shape=list(d.shape), output='bloch.npz', source_status='same_run_numerically_cross_checked',
                       excluded_bands_after_compaction=[], no_polar_projection=True,
-                      limitation='Uses input dimensions; requires a closed square subspace, Gamma-centered grid, zero spatial translations, and Cartesian spinor axes. Real-material regression covers SrVO3 only; the target representation is checked separately')
+                      limitation='Uses input dimensions; requires a closed square subspace, symmetry-preserving Gamma-centered grid, and Cartesian spinor axes. General Seitz translation phases are included. Real-material regression covers SrVO3 only; the target representation is checked separately')
     except Exception as error:
         report['error'] = str(error)
+        report['failed_stage'] = report.pop('active_stage', 'input_validation')
+        report['failed_stage_seconds'] = time.perf_counter() - locals().get('stage_started', started)
+        if not report.get('read_accounting_complete', False):
+            report['read_accounting_note'] = 'Counts cover completed reads returned to the parent; interrupted or failed worker reads may be unreported'
         if (output / 'bloch.npz').exists():
             (output / 'bloch.npz').unlink()
         _runtime_summary(report, started)

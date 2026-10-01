@@ -151,12 +151,83 @@ def _full_rank_polar(matrices, name):
     return left @ right, singular
 
 
+def _normalize_target_orbits(centers, orbitals):
+    centers = np.asarray(centers, dtype=float)
+    if centers.shape == (3,):
+        centers = centers[None]
+    orbitals = [orbitals] if isinstance(orbitals, str) else list(orbitals)
+    if (centers.ndim != 2 or centers.shape[1:] != (3,) or not len(centers)
+            or not np.isfinite(centers).all() or len(orbitals) != len(centers)
+            or any(not isinstance(o, str) or not o.strip() for o in orbitals)):
+        raise ValueError('Provide one finite fractional --center and one --orbital for each target orbit')
+    return centers, orbitals
+
+
+def _target_representation(sym, centers, orbitals):
+    """Set target D only; orbit expansion and orbital/spin order come from WannierBerri."""
+    from wannierberri.symmetry.projections import Projection
+    from wannierberri.symmetry.Dwann import Dwann
+
+    centers, orbitals = _normalize_target_orbits(centers, orbitals)
+    projections = [Projection(position_num=c, spacegroup=sym.spacegroup, orbital=o, spinor=True)
+                   for c, o in zip(centers, orbitals, strict=True)]
+    sym.set_D_wann_from_projections(projections)
+    blocks, positions, orbits = [], [], []
+    for c, o, projection in zip(centers, orbitals, projections, strict=True):
+        orbits.append(dict(position_fractional=c.tolist(), orbital=o,
+                           expanded_positions_fractional=np.asarray(projection.positions).tolist()))
+        for orbital in projection.orbitals:
+            block = Dwann(spacegroup=sym.spacegroup, positions=projection.positions,
+                          orbital=orbital, orbitalrotator=sym.orbitalrotator,
+                          basis_list=projection.basis_list, spinor=True)
+            blocks.append(block)
+            positions.extend(np.repeat(np.asarray(block.orbit), block.num_orbitals, axis=0))
+    positions = np.asarray(positions)
+    if positions.shape != (sym.num_wann, 3):
+        raise ValueError('Target column positions do not match the full Wannier dimension')
+    descriptor = dict(orbits=orbits, column_centers_fractional=positions.tolist(),
+        basis_convention='Input orbit order, then WannierBerri orbital block, orbit position, real orbital, interlaced spin',
+        center_constraint='Affine center covariance under the declared site permutations and integer cell shifts; symmetry-allowed coordinates may relax')
+    if len(orbits) == 1:
+        descriptor.update(position_fractional=centers[0].tolist(), orbital=orbitals[0])
+    return blocks, positions, descriptor
+
+
+def _target_matrix(blocks, kpoint, image, operation):
+    from scipy.linalg import block_diag
+    return block_diag(*(block.get_on_points(kpoint, image, operation) for block in blocks))
+
+
+def _center_covariance(sym, centers):
+    centers = np.asarray(centers, dtype=float)
+    if centers.shape != (sym.num_wann, 3) or not np.isfinite(centers).all():
+        raise ValueError('Invalid final Wannier centers')
+    return float(np.max(abs(sym.symmetrize_WCC(centers)-centers)))
+
+
+def _match_center_columns(ordinary_centers, target_centers, lattice):
+    from pymatgen.core import Lattice
+    from scipy.optimize import linear_sum_assignment
+
+    metric = Lattice(lattice)
+    ordinary = np.asarray(ordinary_centers) @ np.linalg.inv(lattice)
+    target = np.asarray(target_centers) @ np.linalg.inv(lattice)
+    nb = len(ordinary)
+    distances, images = np.empty((nb, nb)), np.empty((nb, nb, 3), dtype=int)
+    for i, source in enumerate(ordinary):
+        for j, destination in enumerate(target):
+            distances[i, j], images[i, j] = metric.get_distance_and_image(source, destination)
+    rows, columns = linear_sum_assignment(distances)
+    order = rows[np.argsort(columns)]
+    return order, images[order, np.arange(nb)], float(distances[rows, columns].max())
+
+
 def align_scdm_initial_gauge(original_amn, ordinary_gauge, ordinary_centers,
-                           lattice, kpoints, sym):
-    """Return polar(original AMN) S†Q and a ledger; all columns must share one center uniquely fixed by the group.
+                           lattice, kpoints, sym, *, target_centers=None):
+    """Return a reversible column/cell transform of polar(original AMN), with a full ledger.
 
     The caller checks run provenance of the ordinary gauge/centers. This function neither repeats SCDM nor changes AMN or D.
-    S_jj(k)=exp(-2πik·n_j); Q comes from an intertwiner of the full Gamma little group, including TR.
+    Center assignment only chooses an initial guess; compatibility is checked by SAWF at every irreducible k point.
     """
     nb = _square_dimension(sym)
     kpoints = np.asarray(kpoints, dtype=float)
@@ -179,20 +250,26 @@ def align_scdm_initial_gauge(original_amn, ordinary_gauge, ordinary_centers,
     ordinary_error = _unitarity_error(ordinary)
     if ordinary_error > floating_tol:
         raise ValueError(f"Ordinary gauge failed the floating-point unitarity check: {ordinary_error}")
-    target = np.asarray(sym.symmetrize_WCC(np.zeros((nb, 3))))
+    inferred = target_centers is None
+    target = np.asarray(sym.symmetrize_WCC(np.zeros((nb, 3))) if inferred else target_centers)
     if target.shape != (nb, 3) or not np.isfinite(target).all():
         raise ValueError("Invalid canonical target center")
-    if np.max(abs(target-target[0])) > 1e-6:
-        raise ValueError("Constant-Q alignment requires all columns to share the same canonical target center")
-    for vector in lattice:
-        if np.max(abs(sym.symmetrize_WCC(target+vector)-target)) > 1e-6:
-            raise ValueError("Canonical representation does not uniquely fix the target center; cell positions cannot be guessed")
-    lattice_inv = np.linalg.inv(lattice)
-    displacement = (centers-target) @ lattice_inv
-    shifts = np.rint(displacement).astype(int)
-    center_error = float(np.max(abs((displacement-shifts) @ lattice)))
-    if center_error > 1e-6:
-        raise ValueError(f"Ordinary centers and the canonical target do not differ by integer cells: {center_error} Å")
+    if inferred:
+        if np.max(abs(target-target[0])) > 1e-6:
+            raise ValueError("Inferring target centers requires the same canonical target center; supply explicit target_centers")
+        for vector in lattice:
+            if np.max(abs(sym.symmetrize_WCC(target+vector)-target)) > 1e-6:
+                raise ValueError("Target centers have free coordinates; supply explicit target_centers")
+        order = np.arange(nb)
+        displacement = (centers-target) @ np.linalg.inv(lattice)
+        shifts = np.rint(displacement).astype(int)
+        center_error = float(np.max(abs((displacement-shifts) @ lattice)))
+        if center_error > 1e-6:
+            raise ValueError(f"Inferred target and ordinary centers do not differ by integer cells: {center_error} Å")
+    else:
+        if _center_covariance(sym, target) > 1e-6:
+            raise ValueError('Declared target column centers violate the target representation')
+        order, shifts, center_error = _match_center_columns(centers, target, lattice)
     gamma = np.flatnonzero(np.max(abs(kpoints-np.rint(kpoints)), axis=1) < 1e-12)
     if len(gamma) != 1:
         raise ValueError("Initial-guess alignment requires exactly one Gamma anchor")
@@ -204,30 +281,34 @@ def align_scdm_initial_gauge(original_amn, ordinary_gauge, ordinary_centers,
     little = sym.isym_little[igamma]
     if len(little) != sym.Nsym or not np.any(sym.time_reversals[little]):
         raise ValueError("Gamma anchor lacks the full space group and antiunitary operations")
-    projected = sum(sym.rotate_U(ordinary[gamma], igamma, s) for s in little)/len(little)
+    ordinary_gamma = ordinary[gamma][:, order]
+    projected = sum(sym.rotate_U(ordinary_gamma, igamma, s) for s in little)/len(little)
     if not np.isfinite(projected).all():
         raise ValueError("Gamma intertwiner is nonfinite")
-    canonical_gamma, projected_singular = _full_rank_polar(projected, "Gamma intertwiner")
+    canonical_gamma, projected_singular = _full_rank_polar(
+        projected, "Gamma initial-guess intertwiner (rank loss does not prove physical incompatibility)")
     gamma_error = max(float(np.max(abs(sym.rotate_U(canonical_gamma, igamma, s)-canonical_gamma)))
                       for s in little)
     if not np.isfinite(gamma_error) or gamma_error > 1e-6:
         raise ValueError(f"Gamma full-group/TR intertwining relation failed: {gamma_error}")
-    q = ordinary[gamma].conj().T @ canonical_gamma
+    q = ordinary_gamma.conj().T @ canonical_gamma
     q_error = _unitarity_error(q)
     raw_gauge, amn_singular = _full_rank_polar(amn, "original AMN")
     phase_dagger = np.exp(2j*np.pi*kpoints @ shifts.T)
-    initial = (raw_gauge*phase_dagger[:, None, :]) @ q
+    initial = (raw_gauge[:, :, order]*phase_dagger[:, None, :]) @ q
     initial_error = _unitarity_error(initial)
-    recovered = (initial @ q.conj().T)*phase_dagger.conj()[:, None, :]
+    recovered = ((initial @ q.conj().T)*phase_dagger.conj()[:, None, :])[:, :, np.argsort(order)]
     recovery_error = float(np.max(abs(recovered-raw_gauge)))
     if max(q_error, initial_error, recovery_error) > floating_tol or not np.isfinite(initial).all():
         raise ValueError("Initial-guess column transform failed unitarity/invertibility checks")
     if not np.array_equal(amn, before):
         raise RuntimeError("Initial-guess alignment changed the original AMN")
-    report = dict(schema="sawf-bridge-scdm-initial-alignment-v1", formula="polar(AMN(k)) S(k)^dagger Q",
+    report = dict(schema="sawf-bridge-scdm-initial-alignment-v1", formula="polar(AMN(k)) P S(k)^dagger Q",
+                  permutation_source_columns=order.tolist(),
                   cell_shifts=shifts.tolist(), Q_real=q.real.tolist(), Q_imag=q.imag.tolist(),
                   target_centers_angstrom=target.tolist(), ordinary_centers_angstrom=centers.tolist(),
-                  center_modulo_cell_max_abs_angstrom=center_error, gamma_index=gamma,
+                  center_assignment_max_distance_angstrom=float(np.max(np.linalg.norm(
+                      centers[order]-target-shifts @ lattice, axis=1))), gamma_index=gamma,
                   gamma_intertwiner_singular_values=projected_singular.tolist(),
                   gamma_intertwiner_covariance_max_abs=gamma_error,
                   original_amn_min_singular=float(amn_singular.min()),
@@ -235,6 +316,7 @@ def align_scdm_initial_gauge(original_amn, ordinary_gauge, ordinary_centers,
                   initial_gauge_unitarity_max_abs=initial_error, inverse_transform_max_abs=recovery_error,
                   original_amn_unchanged=True, canonical_D_unchanged=True,
                   ordinary_provenance="must_be_verified_by_caller")
+    report['center_assignment_role'] = 'Initialization only; ordinary centers need not equal the target and are not a compatibility certificate'
     return initial, report
 
 
@@ -431,9 +513,7 @@ def _ordinary_initial_gauge(data, *, num_iter=1000):
 def run_sawf(seed, symmetry_dir, output_dir, *, center, orbital, num_iter=1000,
              dft_eigenval=None, energy_reference_ev=0.):
     """Initialize from original AMN, align to the target representation, and run SAWF; the DFT path is optional plotting data."""
-    center = np.asarray(center,dtype=float)
-    if center.shape != (3,) or not np.isfinite(center).all() or not isinstance(orbital,str) or not orbital:
-        raise ValueError('The target requires three finite fractional coordinates and a local orbital name')
+    center, orbital = _normalize_target_orbits(center, orbital)
     if not np.isfinite(energy_reference_ev):
         raise ValueError('The plot energy reference must be finite')
     seed, symmetry_dir = [Path(p).resolve() for p in (seed, symmetry_dir)]
@@ -463,12 +543,10 @@ def run_sawf(seed, symmetry_dir, output_dir, *, center, orbital, num_iter=1000,
 def _run_sawf(seed, symmetry_dir, output, report, num_iter,
               center, orbital, dft_eigenval, energy_reference_ev):
     from irrep.spacegroup import SpaceGroup
-    from wannierberri.symmetry.projections import Projection
-    from wannierberri.symmetry.Dwann import Dwann
     from wannierberri.system.system_w90 import System_w90
     from .bands import evaluate_hamiltonian, evaluate_bands
     from .symmetry import _cell_from_win, _validate_grey_group
-    from .symmetry import build_symmetry_maps, make_symmetrizer, group_residuals
+    from .symmetry import build_symmetry_maps, make_symmetrizer, group_residuals, mmn_translation_phases
 
     from .inputs import load_wannier_data
 
@@ -514,29 +592,35 @@ def _run_sawf(seed, symmetry_dir, output, report, num_iter,
     if not np.array_equal(kmap, arrays['kmap']):
         raise ValueError('Packaged k-point/G mappings disagree with the actual interface')
     d = arrays['d']
+    edge_phases = mmn_translation_phases(bundle, sg)
     covariance = []
     for s,anti in enumerate(arrays['time_reversals']):
         mg = bundle.mmn[kmap[s,:,None],edge_map[s]]
         reconstructed = d[s,:,None].conj().swapaxes(-1,-2) @ mg @ d[s,bundle.neighbor_indices]
-        covariance.append(np.max(abs(reconstructed-(bundle.mmn.conj() if anti else bundle.mmn))))
+        expected = edge_phases[s, :, :, None, None]*(bundle.mmn.conj() if anti else bundle.mmn)
+        covariance.append(np.max(abs(reconstructed-expected)))
     _gate(report, 'bloch_all_native_MMN_covariance_max', np.max(covariance))
     _gate(report, 'bloch_energy_covariance_eV',
           np.max(abs(bundle.eig[kmap,:,None]*d-d*bundle.eig[None,:,None,:])))
     _gate(report, 'bloch_unitarity_max', np.max(abs(d.conj().swapaxes(-1,-2) @ d - np.eye(nb))))
     sym = make_symmetrizer(bundle, sg, d)
-    product = group_residuals(d, kmap, sym.time_reversals, sym.sym_product_table, sym.spinor_factors)
+    product = group_residuals(d, kmap, sym.time_reversals, sym.sym_product_table, sym.spinor_factors,
+                              kpoints=bundle.kpoints, translations_diff=sym.translations_diff)
     _gate(report, 'bloch_group_composition_max', product['group_composition_max'])
     t = _validate_grey_group(sg)
     _gate(report, 'bloch_TR_squared_plus_identity_max', np.max(abs(d[t, kmap[t]] @ d[t].conj()+np.eye(nb))))
-    projection = Projection(position_num=center, spacegroup=sg, orbital=orbital, spinor=True)
-    sym.set_D_wann_from_projections(projection)
+    target_blocks, target_centers, target_report = _target_representation(sym, center, orbital)
     if sym.num_wann != nb:
         raise ValueError(f'Target representation produces {sym.num_wann} spinor functions, inconsistent with {nb} target bands')
-    chars = [abs(np.trace(d[s,k])-np.trace(sym.D_wann_blocks[i][s][0]))
+    chars = [abs(np.trace(d[s,k])-sum(np.trace(block) for block in sym.D_wann_blocks[i][s]))
              for i,k in enumerate(sym.kptirr) for s in sym.isym_little[i] if not sym.time_reversals[s]]
     _gate(report, 'target_unitary_character_max', np.max(chars))
-    report['target'] = dict(position_fractional=center.tolist(),orbital=orbital,
-                            basis_convention='WannierBerri real-orbital order, orbital⊗spin')
+    report['target'] = target_report
+    D = np.array([[_target_matrix(target_blocks, bundle.kpoints[k], bundle.kpoints[kmap[s,k]], s)
+                   for k in range(sym.NK)] for s in range(sym.Nsym)])
+    target_product = group_residuals(D, kmap, sym.time_reversals, sym.sym_product_table, sym.spinor_factors,
+                                    kpoints=bundle.kpoints, translations_diff=sym.translations_diff)
+    _gate(report, 'target_group_composition_max', target_product['group_composition_max'])
     path = geometry = None
     if dft_eigenval is not None:
         from .bands import read_dft_eigenval, read_win_path, path_geometry
@@ -549,16 +633,13 @@ def _run_sawf(seed, symmetry_dir, output, report, num_iter,
         ordinary_system = System_w90(data,symmetrize=False,fftlib='numpy',spinor=True,
                                      berry=False,morb=False,spin=False,wannier_centers_from_chk=True)
     initial, alignment = align_scdm_initial_gauge(bundle.amn,ordinary_u,ordinary_centers,
-                                                 bundle.lattice,bundle.kpoints,sym)
+                                                 bundle.lattice,bundle.kpoints,sym,
+                                                 target_centers=target_centers @ bundle.lattice)
     alignment['ordinary_provenance'] = 'Official unconstrained localization from original AMN in the same process; all three input matrices remain elementwise unchanged'
     report['initial_alignment'] = alignment
     report['ordinary_initialization'] = ordinary_report
     report['localisation'] = wannierise_strict(data, sym, frozen_all=True, num_iter=num_iter, initial_gauge=initial)
     u = np.array([data.chk.v_matrix[k] for k in range(sym.NK)])
-    dw = Dwann(spacegroup=sg, positions=projection.positions, orbital=orbital,
-               orbitalrotator=sym.orbitalrotator, basis_list=projection.basis_list, spinor=True)
-    D = np.array([[dw.get_on_points(bundle.kpoints[k], bundle.kpoints[kmap[s,k]], s)
-                   for k in range(sym.NK)] for s in range(sym.Nsym)])
     cov, hcov = [], []
     hk = u.conj().swapaxes(-1,-2) @ (bundle.eig[:,:,None]*u)
     for s,anti in enumerate(sym.time_reversals):
@@ -582,7 +663,7 @@ def _run_sawf(seed, symmetry_dir, output, report, num_iter,
     residuals = []
     for s,anti in enumerate(sym.time_reversals):
         qg = np.array([sg.symmetries[s].transform_k(k) for k in q])
-        Dq = np.array([dw.get_on_points(k,l,s) for k,l in zip(q,qg)])
+        Dq = np.array([_target_matrix(target_blocks,k,l,s) for k,l in zip(q,qg)])
         predicted = Dq @ (hq.conj() if anti else hq) @ Dq.conj().swapaxes(-1,-2)
         residuals.append(float(np.max(abs(evaluate_hamiltonian(system,qg)-predicted))))
     _gate(report, 'off_mesh_H_covariance_eV', np.max(residuals))
@@ -590,7 +671,8 @@ def _run_sawf(seed, symmetry_dir, output, report, num_iter,
     trim = np.array([[a,b,c] for a in (0,.5) for b in (0,.5) for c in (0,.5)])
     energies = evaluate_bands(system, trim)
     _gate(report, 'TRIM_Kramers_max_split_eV', np.max(abs(energies[:,1::2]-energies[:,::2])))
-    _gate(report, 'target_center_max_abs_angstrom', np.max(abs(centers-center@bundle.lattice)))
+    _gate(report, 'target_center_covariance_max_abs_angstrom', _center_covariance(sym, centers))
+    report['target_center_displacement_max_abs_angstrom'] = float(np.max(abs(centers-target_centers @ bundle.lattice)))
     if not np.isfinite(spreads).all() or np.any(spreads < 0):
         raise ValueError('Final spreads are nonfinite or negative')
     for ext, expected in bundle.hashes.items():

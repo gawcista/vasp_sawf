@@ -3,8 +3,10 @@
 #SBATCH --partition=p.large
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=1
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=72
+#SBATCH --hint=nomultithread
+#SBATCH --exclusive
+#SBATCH --mem=0
 #SBATCH --time=24:00:00
 #SBATCH --chdir=/ptmp/tSnS/sawf661
 #SBATCH --output=extract.out
@@ -18,8 +20,5 @@ export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMBA_NUM_THRE
 export PYTHONDONTWRITEBYTECODE=1
 export NUMBA_CACHE_DIR="$PWD/.cache/numba" MPLCONFIGDIR="$PWD/.cache/matplotlib"
 
-srun python -m vasp_sawf.extract_symmetry \
-    --seed /ptmp/tSnS/scdm661/wannier90 \
-    --wavecar /ptmp/tSnS/scdm661/WAVECAR \
-    --outcar /ptmp/tSnS/scdm661/OUTCAR \
+srun --chdir=/ptmp/tSnS/scdm661 python -m vasp_sawf.extract_symmetry \
     --output "$PWD/symmetry"

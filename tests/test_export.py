@@ -162,7 +162,6 @@ def test_source_failure_still_writes_not_ready_and_runtime(tmp_path):
 
 
 @pytest.mark.parametrize('atoms,kpoint,error', [
-    ('Si 0 0 0\nSi .5 .5 .5', '0 0 0', 'zero spatial translations'),
     ('Si 0 0 0', '.5 0 0', 'Gamma-centered'),
 ])
 def test_export_rejects_unsupported_geometry_before_coefficient_io(tmp_path, monkeypatch, atoms, kpoint, error):
@@ -197,7 +196,8 @@ def test_export_rejects_unsupported_geometry_before_coefficient_io(tmp_path, mon
     def forbid_coefficients(*args, **kwargs):
         raise AssertionError('Unsupported geometry reached coefficient I/O')
 
-    monkeypatch.setattr(export, 'read_selected_wavecar', forbid_coefficients)
+    import vasp_sawf.wavecar as wavecar_reader
+    monkeypatch.setattr(wavecar_reader, 'read_selected_wavecar', forbid_coefficients)
     output = tmp_path / 'symmetry'
     with pytest.raises(ValueError, match=error):
         export.export_symmetry(seed, source / 'WAVECAR', source / 'OUTCAR', output)

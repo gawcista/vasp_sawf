@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from importlib.metadata import version
 import numpy as np
 from numbers import Integral
+import os
 from pathlib import Path
 
 
@@ -119,6 +120,44 @@ class SelectedWavecar:
     gauge_status: str = 'unproven'
 
 
+@dataclass(frozen=True)
+class WavecarMetadata:
+    header: WavecarHeader
+    bands_1based: tuple[int, ...]
+    kpoints_1based: tuple[int, ...]
+    kpoints: np.ndarray
+    energies: np.ndarray
+    coefficient_counts: tuple[int, ...]
+    source_identity: dict
+    read_ledger: tuple[dict, ...]
+
+
+def _source_identity(path, stat):
+    return {'resolved_path': str(path), **{field: int(getattr(stat, field)) for field in
+            ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')}}
+
+
+def verify_wavecar_source(path, expected_source_identity):
+    """Check cheap file identity shared by workers; this is not a content hash."""
+    path = Path(path).resolve(strict=True)
+    if _source_identity(path, path.stat()) != expected_source_identity:
+        raise WavecarReadError('WAVECAR source changed since metadata inspection')
+
+
+def _verify_open_source(reader, path, expected_source_identity):
+    if _source_identity(path, os.fstat(reader.f.fileno())) != expected_source_identity:
+        raise WavecarReadError('WAVECAR source changed during reading')
+    verify_wavecar_source(path, expected_source_identity)
+
+
+def _validate_lattice(lattice):
+    lattice = np.asarray(lattice, dtype=float)
+    if (lattice.shape != (3, 3) or not np.isfinite(lattice).all()
+            or np.linalg.slogdet(lattice)[0] == 0):
+        raise WavecarReadError('Valid WIN lattice row vectors are required')
+    return lattice
+
+
 def _positive_integer(value, name):
     if not np.isfinite(value) or value < 1 or value != int(value):
         raise WavecarReadError(f'{name} must be a positive integer')
@@ -195,6 +234,7 @@ def _open_wavecar(path):
             raise WavecarReadError('WAVECAR file size disagrees with the supported record layout')
         header = WavecarHeader(reader.rl, 1, reader.iprec, nk, nb, cutoff,
                                wave_lattice, float(raw_header[12]), original_stat.st_size)
+        _verify_open_source(reader, path, _source_identity(path, original_stat))
         return reader, header, original_stat, path
     except Exception:
         reader.f.close()
@@ -208,7 +248,79 @@ def inspect_wavecar(path):
     return header
 
 
-def read_selected_wavecar(path, *, bands_1based, kpoints_1based, lattice):
+def _read_kpoint_metadata(reader, header, kindex, bands):
+    reader.context = {'kind': 'kpoint_header', 'kpoint_1based': kindex}
+    record = reader.record(reader.irec_start_k(kindex - 1), cnt=4 + 3 * header.num_bands)
+    if not np.isfinite(record).all():
+        raise WavecarReadError('WAVECAR k record contains nonfinite values')
+    count = _positive_integer(record[0], 'spinor coefficient count')
+    if count % 2 or count * 8 > reader.rl:
+        raise WavecarReadError('Invalid two-component coefficient count or record byte range')
+    k = record[1:4].copy()
+    energies = record[4:].reshape(header.num_bands, 3)[np.array(bands) - 1, 0].copy()
+    return count, k, energies
+
+
+def inspect_selected_wavecar(path, *, bands_1based, lattice, kpoints_1based=None):
+    """Read only headers and energy records, retaining original band/k order and exact spinor counts."""
+    lattice = _validate_lattice(lattice)
+    reader, header, original_stat, path = _open_wavecar(path)
+    identity = _source_identity(path, original_stat)
+    try:
+        if not np.allclose(header.lattice, lattice, rtol=0, atol=1e-8):
+            raise WavecarReadError('WAVECAR lattice disagrees with interface WIN')
+        bands = _indices(bands_1based, header.num_bands, 'bands_1based')
+        kindices = (tuple(range(1, header.num_kpoints + 1)) if kpoints_1based is None else
+                    _indices(kpoints_1based, header.num_kpoints, 'kpoints_1based'))
+        records = [_read_kpoint_metadata(reader, header, ik, bands) for ik in kindices]
+        _verify_open_source(reader, path, identity)
+        return WavecarMetadata(header, bands, kindices, np.array([row[1] for row in records]),
+                               np.array([row[2] for row in records]), tuple(row[0] for row in records),
+                               identity, tuple(reader.ledger))
+    finally:
+        reader.f.close()
+
+
+def estimate_wavecar_memory(metadata, *, workers=1, working_complex128_copies=6):
+    """Estimate one-k worker storage; allocator, G enumeration and LAPACK peaks need measurement."""
+    if (isinstance(workers, (bool, np.bool_)) or not isinstance(workers, Integral)
+            or workers < 1):
+        raise WavecarReadError('workers must be a positive integer')
+    if (isinstance(working_complex128_copies, (bool, np.bool_))
+            or not isinstance(working_complex128_copies, Integral) or working_complex128_copies < 1):
+        raise WavecarReadError('working_complex128_copies must be a positive integer')
+    nb = len(metadata.bands_1based)
+    counts = metadata.coefficient_counts
+    max_count = max(counts)
+    ng = max_count // 2
+    active_workers = min(int(workers), len(counts))
+    per_worker = {
+        'raw_complex64_bytes': nb * max_count * 8,
+        'one_complex128_copy_bytes': nb * max_count * 16,
+        'working_complex128_copies': int(working_complex128_copies),
+        'g_geometry_bytes': ng * (6 * 8 + 8),
+        'g_index_workspace_bytes': ng * 8 * 8,
+        'python_g_map_allowance_bytes': ng * 320,
+        'interpreter_allowance_bytes': 1024**3,
+    }
+    per_worker_total = (per_worker['raw_complex64_bytes']
+                        + working_complex128_copies * per_worker['one_complex128_copy_bytes']
+                        + sum(per_worker[key] for key in ('g_geometry_bytes', 'g_index_workspace_bytes',
+                                                         'python_g_map_allowance_bytes',
+                                                         'interpreter_allowance_bytes')))
+    return {'model': 'selected-k-worker-v1', 'is_estimate': True,
+            'workers_requested': int(workers), 'workers': active_workers,
+            'stored_kpoints': len(counts), 'selected_bands': nb, 'spinor_components': 2,
+            'max_gvectors': ng, 'coefficient_count_includes_spinor': True,
+            'selected_coefficient_read_bytes': sum(counts) * nb * 8,
+            'per_worker': per_worker, 'per_worker_estimated_bytes': int(per_worker_total),
+            'all_workers_estimated_bytes': int(per_worker_total * active_workers),
+            'limitations': 'Heuristic working-copy and Python allowances; not a guaranteed peak. '
+                           'The 1 GiB import allowance exceeds the measured 588 MiB small-fixture metadata process. '
+                           'Excludes parent-process state and filesystem cache. Measure RSS on allocated hardware.'}
+
+
+def read_selected_wavecar(path, *, bands_1based, kpoints_1based, lattice, expected_source_identity=None):
     """Read selected k/band records only; return unnormalized official Kpoints and a read ledger.
 
     lattice contains row vectors in angstroms read by the caller from interface WIN; it must match WAVECAR.
@@ -219,12 +331,14 @@ def read_selected_wavecar(path, *, bands_1based, kpoints_1based, lattice):
     from irrep.gvectors import calc_gvectors
     from irrep.kpoint import Kpoint
 
-    lattice = np.asarray(lattice, dtype=float)
-    if (lattice.shape != (3, 3) or not np.isfinite(lattice).all()
-            or np.linalg.slogdet(lattice)[0] == 0):
-        raise WavecarReadError('Valid WIN lattice row vectors are required')
+    lattice = _validate_lattice(lattice)
+    if expected_source_identity is not None:
+        verify_wavecar_source(path, expected_source_identity)
     reader, header, original_stat, path = _open_wavecar(path)
     try:
+        identity = _source_identity(path, original_stat)
+        if expected_source_identity is not None and identity != expected_source_identity:
+            raise WavecarReadError('WAVECAR source changed since metadata inspection')
         if not np.allclose(header.lattice, lattice, rtol=0, atol=1e-8):
             raise WavecarReadError('WAVECAR lattice disagrees with interface WIN')
         nb, nk, cutoff = header.num_bands, header.num_kpoints, header.cutoff_ev
@@ -233,15 +347,7 @@ def read_selected_wavecar(path, *, bands_1based, kpoints_1based, lattice):
         reciprocal = np.linalg.inv(header.lattice).T * (2 * np.pi)
         kpoints = []
         for kindex in kindices:
-            reader.context = {'kind': 'kpoint_header', 'kpoint_1based': kindex}
-            record = reader.record(reader.irec_start_k(kindex - 1), cnt=4 + 3 * nb)
-            if not np.isfinite(record).all():
-                raise WavecarReadError('WAVECAR k record contains nonfinite values')
-            count = _positive_integer(record[0], 'spinor coefficient count')
-            if count % 2 or count * 8 > reader.rl:
-                raise WavecarReadError('Invalid two-component coefficient count or record byte range')
-            k = record[1:4].copy()
-            energy = record[4:].reshape(nb, 3)[np.array(bands) - 1, 0].copy()
+            count, k, energy = _read_kpoint_metadata(reader, header, kindex, bands)
             ig, e_kg = calc_gvectors(k, reciprocal, cutoff, nplane=count // 2,
                                      Ecut1=cutoff, spinor=True, verbosity=0)
             if len(ig) * 2 != count:
@@ -257,10 +363,7 @@ def read_selected_wavecar(path, *, bands_1based, kpoints_1based, lattice):
                            spinor=True, kpt=k, WF=association.coefficients, Energy=energy,
                            ig=association.ig, upper=None, normalize=False, eKG=e_kg)
             kpoints.append(point)
-        final_stat = path.stat()
-        fields = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns')
-        if any(getattr(original_stat, field) != getattr(final_stat, field) for field in fields):
-            raise WavecarReadError('WAVECAR source changed during reading')
+        _verify_open_source(reader, path, identity)
         return SelectedWavecar(header, tuple(kpoints), bands, kindices, tuple(reader.ledger))
     finally:
         reader.f.close()

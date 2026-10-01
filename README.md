@@ -32,6 +32,8 @@ The current SrVO₃ coefficient-closure residual has been accepted: see [ACCEPTA
 
 ## Step 1: extract on ADA
 
+For a single batch job followed by downloading the result directory, use the [ADA submission instructions](DEPLOY_ADA.md#submit-once-download-the-result-continue-locally). The batch script calls the same extraction entry point shown below; its input and symmetry checks are part of the program.
+
 ```bash
 sawf-extract \
   --seed /path/to/interface/wannier90 \
@@ -42,7 +44,7 @@ sawf-extract \
 
 `--seed` is the shared prefix of the original `.win/.mmn/.amn/.eig` files. WIN must contain the complete lattice, atomic structure, and k-point list. OUTCAR must retain the IBZKPT/IBZKPT_HF and t-inv provenance tables and explicitly specify zero MAGMOM; the current entry point requires its reciprocal folding to match WIN. WAVECAR must have been saved at the end of the same calculation that generated the interface files. An earlier SCF input WAVECAR alone does not meet the requirements of the validated entry point. An IBZ calculation does not require recomputing full-BZ wavefunctions.
 
-The program reads selected-band records with all G vectors and both spinor components. It obtains Γ-point anchors from IrRep, transports them across the full mesh using native VASP PAW MMN matrices, and checks independent IBZ transformations, group composition, TR², and matrix covariance. Original band indices are determined from WIN and the original band count in WAVECAR; excluded bands are not removed a second time from compact interface data. NNKP and UNK files are not required. The program neither exports complete compact wavefunctions nor reads, copies, or hashes the entire WAVECAR.
+After checking structural symmetry and the full mesh, the program reads selected-band records with all G vectors and both spinor components. It obtains Γ-point anchors from IrRep, transports them across the full mesh using native VASP PAW MMN matrices, and checks independent IBZ transformations, group composition, TR², and matrix covariance. Original band indices are determined from WIN and the original band count in WAVECAR; excluded bands are not removed a second time from compact interface data. NNKP and UNK files are not required. The program neither exports complete compact wavefunctions nor reads, copies, or hashes the entire WAVECAR.
 
 The outputs are `bloch.npz` and `report.json`. Together they form a small symmetry bundle; download the whole `symmetry` directory. Step 2 also needs the original WIN/MMN/AMN/EIG files. Their paths may change, but their contents must remain identical.
 
@@ -129,7 +131,7 @@ The SrVO₃ coefficient-closure residual `2.589629272055618e-6` has been accepte
 
 On 2026-09-29, editable installation with dependency resolution succeeded in a fresh temporary Python 3.13 environment using official PyPI. `pip check` passed. The complete test suite ran outside the checkout with 190 passed and 16 external-data tests skipped. A normal wheel was then built and installed in place of the editable package; imports resolved to `site-packages`, and the same suite again passed 190 tests with 16 skipped. Both modes checked all four commands, real computational imports, and the packaged acceptance record without relying on `PYTHONPATH`. The optional pyFFTW warning used WannierBerri's NumPy fallback. Core computation files and the acceptance JSON remained byte-identical during the namespace move. These checks did not read an original WAVECAR or execute an ADA job, and they do not extend the supported physical cases.
 
-The measured local environment is Linux/Python 3.13 with WannierBerri 1.7.0, IrRep 2.6.3, NumPy 2.3.5, and SciPy 1.17.0. Exact dependencies are in `requirements.lock`. This is a local lock, not an ADA installation that has already been replayed. Install this release into the compatible environment with `python -m pip install -e .` and use the installed commands.
+The measured local environment is Linux/Python 3.13 with WannierBerri 1.7.0, IrRep 2.6.3, NumPy 2.3.5, and SciPy 1.17.0. Exact dependencies are in `requirements.lock`. This lock was validated locally. The user has since reported completing installation on ADA with Python 3.13; ADA calculations have not yet been verified. Install this release into the compatible environment with `python -m pip install -e .` and use the installed commands.
 
 The historical local validation interpreter is `DATA_ROOT/.sawf-bridge/envs/smoke-py313/bin/python`; it is not a required installation path. Both stages currently use serial Python with NumPy/SciPy and the official libraries. Small-system tests set `OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1`. MPI is not implemented, and large-system parallel scaling has not been validated. Memory must not be inferred from total WAVECAR size. Jobs are not submitted automatically.
 

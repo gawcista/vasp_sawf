@@ -483,6 +483,7 @@ def export_symmetry(seed, wavecar, outcar, output_dir):
     try:
         from irrep.spacegroup import SpaceGroup
         header = inspect_wavecar(wavecar)
+        report['header_preflight_read_bytes'] = 128
         bundle = read_inputs(seed, source_nb=header.num_bands)
         report['source_hashes'] = bundle.hashes
         nb = _closed_spinor_dimension(bundle.amn)
@@ -500,6 +501,14 @@ def export_symmetry(seed, wavecar, outcar, output_dir):
             raise ValueError('Wavefunction phases for differing interface and OUTCAR folding have not been validated for this calculation')
         if len(table.ibz_kpoints) != header.num_kpoints:
             raise ValueError('OUTCAR source and WAVECAR disagree on the number of stored IBZ points')
+        sg = SpaceGroup.from_cell(cell=(bundle.lattice, positions, typat), spinor=True,
+                                  magmom=True, include_TR=True, verbosity=0)
+        operations = sg.symmetries
+        pure_t = _validate_grey_group(sg)
+        report['symmetry_operations'] = dict(total=len(operations),
+                                             antiunitary=sum(bool(op.time_reversal) for op in operations))
+        kmap, edge_map = build_symmetry_maps(bundle, sg)
+        anti = np.array([op.time_reversal for op in operations], dtype=bool)
         stored = read_selected_wavecar(wavecar, bands_1based=bundle.bands_vasp_1based,
                                        kpoints_1based=None, lattice=bundle.lattice)
         report['wavecar'] = asdict(stored.header)
@@ -509,7 +518,6 @@ def export_symmetry(seed, wavecar, outcar, output_dir):
                                  whole_file_hash_computed=False)
         report['read_ledger'] = list(stored.read_ledger)
         report['read_bytes'] = sum(row['bytes_returned'] for row in stored.read_ledger)
-        report['header_preflight_read_bytes'] = 128
         report['coefficient_storage_dtype'] = 'complex64'
         report['computation_dtype'] = 'complex128_lossless_copy'
         report['bands_vasp_1based'] = list(stored.bands_1based)
@@ -529,14 +537,6 @@ def export_symmetry(seed, wavecar, outcar, output_dir):
         eig_tolerance = .5 * 10. ** next(iter(exponents)) + 8 * np.finfo(float).eps * max(1., abs(bundle.eig).max())
         report['eig_serialization_tolerance_ev'] = float(eig_tolerance)
         _check(residuals, 'wavecar_interface_energy_max_ev', np.max(abs(expected_eig-bundle.eig)), eig_tolerance)
-        sg = SpaceGroup.from_cell(cell=(bundle.lattice, positions, typat), spinor=True,
-                                  magmom=True, include_TR=True, verbosity=0)
-        operations = sg.symmetries
-        pure_t = _validate_grey_group(sg)
-        report['symmetry_operations'] = dict(total=len(operations),
-                                             antiunitary=sum(bool(op.time_reversal) for op in operations))
-        kmap, edge_map = build_symmetry_maps(bundle, sg)
-        anti = np.array([op.time_reversal for op in operations], dtype=bool)
         points = []
         for raw in stored.kpoints:
             point = copy.copy(raw)

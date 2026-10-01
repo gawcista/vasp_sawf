@@ -161,6 +161,52 @@ def test_source_failure_still_writes_not_ready_and_runtime(tmp_path):
     assert not (output / 'bloch.npz').exists()
 
 
+@pytest.mark.parametrize('atoms,kpoint,error', [
+    ('Si 0 0 0\nSi .5 .5 .5', '0 0 0', 'zero spatial translations'),
+    ('Si 0 0 0', '.5 0 0', 'Gamma-centered'),
+])
+def test_export_rejects_unsupported_geometry_before_coefficient_io(tmp_path, monkeypatch, atoms, kpoint, error):
+    import vasp_sawf.symmetry as export
+
+    source = tmp_path / 'inputs'
+    source.mkdir()
+    seed = source / 'wannier90'
+    Path(f'{seed}.win').write_text(
+        'num_bands=2\nnum_wann=2\nspinors=true\nmp_grid=1 1 1\n'
+        'begin unit_cell_cart\n2 0 0\n0 3 0\n0 0 4\nend unit_cell_cart\n'
+        f'begin atoms_frac\n{atoms}\nend atoms_frac\n'
+        f'begin kpoints\n{kpoint}\nend kpoints\n')
+    Path(f'{seed}.amn').write_text('identity\n2 1 2\n1 1 1 1 0\n2 1 1 0 0\n1 2 1 0 0\n2 2 1 1 0\n')
+    Path(f'{seed}.eig').write_text('1 1 0.00000000\n2 1 0.00000000\n')
+    Path(f'{seed}.mmn').write_text('identity\n2 1 6\n' + ''.join(
+        f'1 1 {shift}\n1 0\n0 0\n0 0\n1 0\n'
+        for shift in ('1 0 0', '-1 0 0', '0 1 0', '0 -1 0', '0 0 1', '0 0 -1')))
+    (source / 'OUTCAR').write_text(
+        _spin_outcar().replace('6*0', f'{3 * len(atoms.splitlines())}*0') +
+        'Subroutine IBZKPT returns following result:\nFound 1 irreducible k-points:\n'
+        f'Following reciprocal coordinates:\n{kpoint} 1\nFollowing cartesian coordinates:\n'
+        'Subroutine IBZKPT_HF returns following result:\nFound 1 k-points in 1st BZ\n'
+        f'Following reciprocal coordinates:   # in IRBZ\n{kpoint} 1 1 t-inv F\n')
+    # Headers only; no coefficient data are needed for structural rejection.
+    with (source / 'WAVECAR').open('wb') as handle:
+        handle.truncate(128 * 5)
+        np.array([128, 1, 45200], dtype='<f8').tofile(handle)
+        handle.seek(128)
+        np.array([1, 2, 20, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0], dtype='<f8').tofile(handle)
+
+    def forbid_coefficients(*args, **kwargs):
+        raise AssertionError('Unsupported geometry reached coefficient I/O')
+
+    monkeypatch.setattr(export, 'read_selected_wavecar', forbid_coefficients)
+    output = tmp_path / 'symmetry'
+    with pytest.raises(ValueError, match=error):
+        export.export_symmetry(seed, source / 'WAVECAR', source / 'OUTCAR', output)
+    report = json.loads((output / 'report.json').read_text())
+    assert not report['sawf_ready']
+    assert report['header_preflight_read_bytes'] == 128
+    assert not (output / 'bloch.npz').exists()
+
+
 def test_export_never_overwrites_or_writes_into_original_input_tree(tmp_path):
     from vasp_sawf.symmetry import export_symmetry
 

@@ -2,7 +2,34 @@
 
 Install `vasp-sawf` into your chosen current Python environment and use its commands from any working directory. No project-specific virtual environment or fixed environment module is required. Run extraction on ADA where WAVECAR is stored; SAWF can run on ADA or locally without WAVECAR.
 
-The current release requires Python 3.13 (`>=3.13,<3.14`), matching the validated range. Critical versions are pinned in `pyproject.toml`, including WannierBerri 1.7.0, IrRep 2.6.3, NumPy 2.3.5, SciPy 1.17.0, and Numba 0.62.1. Installation and calculation reproduction on ADA have not yet been completed. A successful local test is not an ADA result.
+The current release requires Python 3.13 (`>=3.13,<3.14`), matching the validated range. Critical versions are pinned in `pyproject.toml`, including WannierBerri 1.7.0, IrRep 2.6.3, NumPy 2.3.5, SciPy 1.17.0, and Numba 0.62.1. The user has reported completing installation on ADA in Python 3.13. Calculation reproduction and resource measurements on ADA have not yet been verified.
+
+## Submit once, download the result, continue locally
+
+With the installed Python 3.13 environment active on ADA:
+
+```bash
+mkdir -p /ptmp/tSnS/sawf661
+sbatch "$HOME/.src/vasp_sawf/extract_ada.sbatch"
+```
+
+The batch file runs one extraction command using the inherited environment. Input and symmetry checks are performed inside the program; they do not need a separate batch-script preflight. A successful extraction creates:
+
+```text
+/ptmp/tSnS/sawf661/symmetry/
+├── bloch.npz
+└── report.json
+```
+
+After the job succeeds, run the following on your local machine, replacing `YOUR_ADA_SSH_HOST` with your working ADA SSH host or alias:
+
+```bash
+scp -r YOUR_ADA_SSH_HOST:/ptmp/tSnS/sawf661/symmetry ./
+```
+
+Use this bundle with the identical original `.win/.mmn/.amn/.eig` files already stored locally, then run `sawf-run` with the material's established target representation. The [local SAWF command below](#4-run-sawf) shows the validated SrVO₃ example. Neither WAVECAR nor UNK needs to be downloaded.
+
+The current tSnS screw symmetry remains unsupported, so that input will stop before coefficient reading and will not produce a usable bundle. The detailed support limits and resource estimate appear below; shortening the submission script does not change the supported physics.
 
 ## 1. Install in the current environment
 
@@ -112,23 +139,13 @@ The program uses one Python process with NumPy/SciPy numerical kernels. Do not s
 | Job working directory and logs | `/ptmp/tSnS/sawf661` |
 | New extraction output | `/ptmp/tSnS/sawf661/symmetry` |
 
-Use the Python 3.13 environment into which you installed the package when submitting. The template inherits that environment and binds both preflight and extraction to its `python`. Extraction uses `python -m vasp_sawf.extract_symmetry`, the module behind `sawf-extract`, so an unrelated command elsewhere on `PATH` cannot select a different interpreter. The template does not purge or load modules, activate a fixed virtual environment, or set `PYTHONPATH`. Any runtime libraries or module settings needed by your chosen interpreter must therefore be present in the submitted environment.
+Use the Python 3.13 environment into which you installed the package when submitting. The template inherits that environment and runs extraction with its `python`. Extraction uses `python -m vasp_sawf.extract_symmetry`, the module behind `sawf-extract`, so an unrelated command elsewhere on `PATH` cannot select a different interpreter. The template does not purge or load modules, activate a fixed virtual environment, or set `PYTHONPATH`. Any runtime libraries or module settings needed by your chosen interpreter must therefore be present in the submitted environment.
 
 **The current tSnS structure is not supported by the extraction algorithm yet.** A lightweight local check on 2026-09-28, using the actual WIN structure and fixed IrRep 2.6.3, found the candidate structural grey group `P2_11'`, with four operations. The nontrivial unitary operation has fractional rotation `diag(-1, 1, -1)` and translation `(0, 0.5, 0.3371566930075367)`. Its square is translation by `(0, 1, 0)`: the half translation along b cannot be removed by shifting the origin. Constructing a candidate grey group from structure does not establish the magnetic state of the calculation.
 
 `_validate_grey_group` and `build_symmetry_maps` currently reject nonzero spatial translations. Simply removing those checks would be incorrect: MMN transport, independent coefficient transformations, and group-composition checks need the corresponding translation phases. The SAWF verification must use the same conventions. The screw has no individually fixed center modulo lattice translations, so the current single-center target and initial-guess alignment also require extension to multiple symmetry-related centers. The specific centers and local representation remain undetermined. These are implementation limits; the accepted SrVO3 numerical workflow is unchanged. No target Wannier representation is inferred from the tSnS SCDM AMN.
 
-The template therefore performs the existing structural checks before coefficient I/O. For the local tSnS structure it is expected to stop at that check. The check reads only 128 logical WAVECAR header bytes plus the small interface files; it does not read coefficients. Do not submit a full tSnS extraction expecting it to succeed until translation support is implemented and independently tested. The local historical OUTCAR also has `LWAVE=F`; the contents of the remote directory have not been inspected. The actual remote WAVECAR/OUTCAR must meet the documented interface-output requirements; do not assume that an earlier SCF WAVECAR is the interface output.
-
-After these prerequisites have been resolved, submission would be:
-
-```bash
-cd "$HOME/.src/vasp_sawf"
-git pull --ff-only
-python -m pip install -e .
-mkdir -p /ptmp/tSnS/sawf661
-sbatch extract_ada.sbatch
-```
+The extraction program performs the existing structural and mesh checks before coefficient I/O, including when called directly without the batch template. Unsupported structures or meshes are rejected before coefficient reading; input and provenance checks may stop earlier. These checks read the initial 128-byte WAVECAR header, interface files, and OUTCAR. Do not submit a full tSnS extraction expecting it to succeed until translation support is implemented and independently tested. The local historical OUTCAR also has `LWAVE=F`; the contents of the remote directory have not been inspected. The actual remote WAVECAR/OUTCAR must meet the documented interface-output requirements; do not assume that an earlier SCF WAVECAR is the interface output.
 
 Update source only when the checkout is clean and no job uses it. The working directory must exist before `sbatch`, because Slurm opens its logs before executing the script. Logs append to fixed `extract.out` and `extract.err` files; extraction refuses to overwrite the existing `symmetry` directory. No input files are copied or modified. If moving the template to another system, change its input and working-directory paths. `#SBATCH` directives do not expand `$HOME` or shell variables; the working-directory directive therefore uses a literal path. See the [Slurm sbatch manual](https://slurm.schedmd.com/sbatch.html).
 
@@ -140,13 +157,13 @@ The SOC meaning of OUTCAR's plane-wave count must be resolved using the actual W
 
 Serial G enumeration and mapping can dominate runtime; allocating 72 MPI ranks would launch duplicate work, and more BLAS threads do not parallelize those Python loops. After the symmetry extension, calibrate one stored k point with all eight bands and all G vectors on allocated resources before attempting the full extraction; such a calibration is not a replacement or downsampling of the required 6x6x1 production mesh. No calibration mode or parallel algorithm is added by this batch template.
 
-`/usr/bin/time -v` records extraction wall time and peak RSS in `extract.err`; `symmetry/report.json` records the process peak RSS, elapsed time, and logical record-read ledger. Its `read_bytes` excludes the extractor's own 128-byte header preflight (recorded separately as `header_preflight_read_bytes`) and the additional 128-byte batch preflight. Slurm provides an independent accounting view after a job:
+`symmetry/report.json` records process peak RSS, elapsed time, and the logical record-read ledger. Its `read_bytes` excludes the extractor's initial 128-byte header read, recorded separately as `header_preflight_read_bytes`. There is no second header read by the batch script. Slurm provides an independent accounting view after a job:
 
 ```bash
 sacct -j JOB_ID --format=JobID,State,Elapsed,MaxRSS,AllocCPUS
 ```
 
-Inspect the individual `srun` steps as well as the job row. Logical bytes read by the program are not identical to physical filesystem I/O. Neither tSnS peak memory nor extraction time has been measured, and this template has not been run on ADA.
+Inspect the extraction step as well as the job row. Logical bytes read by the program are not identical to physical filesystem I/O. Neither tSnS peak memory nor extraction time has been measured, and this template has not been run on ADA.
 
 ## 4. Run SAWF
 
@@ -170,6 +187,8 @@ Record `git rev-parse HEAD` when installing. Later, run `git pull --ff-only` onl
 
 ## Validation status
 
-The 2026-09-29 package installation was tested in a fresh temporary local Python 3.13 environment, with runtime dependencies resolved from official PyPI. Editable installation and `pip check` passed. From a directory outside the checkout, all four commands, actual computational imports, the packaged acceptance record, and the full regression suite passed: 190 tests passed and 16 external-data cases were skipped. Replacing the editable install with a built wheel produced the same result, with imports resolving to `site-packages`. The wheel contains only the package and its distribution metadata; its acceptance JSON is byte-identical to the source record. Slurm shell and embedded-Python syntax checks also passed. No production environment was modified, no original WAVECAR was read, and no ADA job was submitted.
+On 2026-10-01, the simplified batch file passed `bash -n`. The full local suite passed 192 tests with 16 external-data cases skipped, including two regressions verifying that unsupported geometry is rejected before coefficient I/O. Tests used an editable installation in a temporary Python 3.13 environment with read-only access to the existing pinned scientific dependencies. The only warning was the existing optional pyFFTW fallback. No original wavefunctions were read and no ADA job was submitted.
 
-Before the packaging change, local Linux/Python 3.13 checks on 2026-09-28 passed `pip check`, actual computational-module imports, both computational entry points' `--help`, and 184 portable tests; 16 external-data cases were deselected. The final English source was tested from a temporary copy containing only the release files. Four additional tests passed against the existing SrVO₃ symmetry bundle, checking legacy compatibility and rejection of altered evidence without reading WAVECAR. The temporary copy was removed after testing. The optional pyFFTW package is not installed, so WannierBerri uses its official NumPy FFT fallback. Installation and calculation reproduction on ADA remain untested. No cluster jobs have been submitted.
+The 2026-09-29 package installation was tested in a fresh temporary local Python 3.13 environment, with runtime dependencies resolved from official PyPI. Editable installation and `pip check` passed. From a directory outside the checkout, all four commands, actual computational imports, the packaged acceptance record, and the full regression suite passed: 190 tests passed and 16 external-data cases were skipped. Replacing the editable install with a built wheel produced the same result, with imports resolving to `site-packages`. The wheel contains only the package and its distribution metadata; its acceptance JSON is byte-identical to the source record. The then-current batch script passed shell and embedded-Python syntax checks. No production environment was modified, no original WAVECAR was read, and no ADA job was submitted.
+
+Before the packaging change, local Linux/Python 3.13 checks on 2026-09-28 passed `pip check`, actual computational-module imports, both computational entry points' `--help`, and 184 portable tests; 16 external-data cases were deselected. The final English source was tested from a temporary copy containing only the release files. Four additional tests passed against the existing SrVO₃ symmetry bundle, checking legacy compatibility and rejection of altered evidence without reading WAVECAR. The temporary copy was removed after testing. The optional pyFFTW package is not installed, so WannierBerri uses its official NumPy FFT fallback. The user subsequently reported a completed ADA installation with Python 3.13. ADA calculation reproduction remains unverified; no cluster job was submitted during these local checks.

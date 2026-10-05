@@ -557,6 +557,7 @@ def _run_sawf(seed, symmetry_dir, output, report, num_iter,
     bundle = read_inputs(seed, source_nb=source_nb)
     arrays, source_report = _read_bound_package(symmetry_dir, bundle.hashes)
     report.update(source_hashes=bundle.hashes, bands_vasp_1based=bundle.bands_vasp_1based.tolist(),
+                  source_num_bands=source_nb, mesh=bundle.mesh.tolist(),
                   symmetry_package_sha256=source_report['bloch_sha256'], numerical_gate=1e-6,
                   numerical_gate_source='WB1.7.0 Symmetrizer_Uirr default tolerance; not a user-specified physical error criterion')
     report['coefficient_closure_relative_max'] = source_report['residuals']['ibz_coefficient_closure_relative_max']
@@ -702,6 +703,10 @@ def _run_sawf(seed, symmetry_dir, output, report, num_iter,
             report[name+'_path_error_ev'] = dict(max_abs=float(np.max(abs(error))),
                                                 rms=float(np.sqrt(np.mean(error**2))))
     report['localisation'].pop('convergence_history',None)
+    from .wanproj import write_wanproj
+    report['wanproj'] = write_wanproj(
+        output/'WANPROJ', U=u, kpoints=bundle.kpoints,
+        bands_vasp_1based=bundle.bands_vasp_1based, source_nb=source_nb, mesh=bundle.mesh)
     report.update(model_file='model.npz',model_sha256=hashlib.sha256(model_file.read_bytes()).hexdigest(),
                   status='ready',sawf_ready=True,
                   numerical_checks_passed=True,converged=True)

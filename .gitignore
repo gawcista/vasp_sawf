@@ -10,3 +10,16 @@ WAVECAR*
 !vasp_sawf/wavecar.py
 POTCAR*
 UNK*
+WANPROJ*
+!vasp_sawf/wanproj.py
+VIJKL*
+VRijkl*
+AGENTS.md
+CLAUDE.md
+SYMMETRY.md
+DEPLOY_ADA.md
+ACCEPTANCE.md
+.claude/
+.codex/
+.codex_cc_handoff.md
+docs/superpowers/

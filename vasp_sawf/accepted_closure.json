@@ -3,7 +3,7 @@
   "date": "2026-09-24",
   "approved_by": "The user explicitly accepted the numerical assessment and requested removal of this blocker",
   "scope": "The single-particle SAWF and band model for the current six-band SrVO3 subspace; all other matrix and convergence checks must still pass",
-  "document": "ACCEPTANCE.md",
+  "document": "README.md#numerical-scope",
   "source_hashes": {
     "win": "8470fcee1d8bf6b5c1009fe6ae3111192b66c43f551a8803ed39e6e1f9c0f2ba",
     "amn": "15ae2190883bfd963b083c5a31eee8a371e469174b5aad2755d4a8f570c767b6",

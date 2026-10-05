@@ -1,4 +1,4 @@
-# Local isolated Linux x86_64 / Python 3.13 environment; not yet validated on ADA.
+# Linux x86_64 / Python 3.13 runtime dependency snapshot.
 # Exact versions and downloaded artifact SHA256 hashes from official PyPI install reports.
 # pylatexenc is an sdist; build tools are outside this runtime lock. Fresh installation has not been replayed.
 annotated-types==0.8.0 --hash=sha256:f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0

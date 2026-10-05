@@ -1,24 +1,20 @@
 #!/bin/bash
 #SBATCH --job-name=sawf-extract
-#SBATCH --partition=p.large
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=72
-#SBATCH --hint=nomultithread
-#SBATCH --exclusive
-#SBATCH --mem=0
-#SBATCH --time=24:00:00
-#SBATCH --chdir=/ptmp/tSnS/sawf661
-#SBATCH --output=extract.out
-#SBATCH --error=extract.err
-#SBATCH --open-mode=append
-#SBATCH --export=ALL
+#SBATCH --output=extract-%j.out
+#SBATCH --error=extract-%j.err
 
 set -euo pipefail
-
+if [[ $# -ne 2 ]]; then
+    echo "Usage: sbatch [resource options] extract_ada.sbatch INPUT_DIR OUTPUT_DIR" >&2
+    exit 2
+fi
+input_dir=$(realpath -- "$1")
+output_dir="$2"
+if [[ "$output_dir" != /* ]]; then
+    output_dir="$PWD/$output_dir"
+fi
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMBA_NUM_THREADS=1
 export PYTHONDONTWRITEBYTECODE=1
-export NUMBA_CACHE_DIR="$PWD/.cache/numba" MPLCONFIGDIR="$PWD/.cache/matplotlib"
-
-srun --chdir=/ptmp/tSnS/scdm661 python -m vasp_sawf.extract_symmetry \
-    --output "$PWD/symmetry"
+srun --chdir="$input_dir" sawf-extract --output "$output_dir"

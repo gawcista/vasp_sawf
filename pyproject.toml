@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vasp-sawf"
-version = "0.1.0"
+version = "0.2.0"
 description = "Reuse VASP SCDM inputs for symmetry-constrained Wannierization"
 readme = "README.md"
 # Numba 0.62.1 and Ray 2.51.1 reject Python 3.14 in their build scripts.
@@ -32,6 +32,7 @@ test = ["pytest==9.0.3"]
 [project.scripts]
 sawf-extract = "vasp_sawf.extract_symmetry:main"
 sawf-run = "vasp_sawf.run_sawf:main"
+sawf-export-wanproj = "vasp_sawf.wanproj:main"
 sawf-plot-bands = "vasp_sawf.plot_bands:main"
 sawf-plot-symmetry = "vasp_sawf.plot_symmetry:main"
 

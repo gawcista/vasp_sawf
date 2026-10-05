@@ -10,7 +10,7 @@ import pytest
 
 
 @pytest.mark.parametrize('command', [
-    'sawf-extract', 'sawf-run', 'sawf-plot-bands', 'sawf-plot-symmetry',
+    'sawf-extract', 'sawf-run', 'sawf-export-wanproj', 'sawf-plot-bands', 'sawf-plot-symmetry',
 ])
 def test_installed_command_help_outside_checkout(command, tmp_path):
     executable = Path(sysconfig.get_path('scripts')) / command
@@ -38,6 +38,6 @@ def test_installed_package_contains_acceptance_record(tmp_path):
 def test_installed_computation_modules_import_outside_checkout(tmp_path):
     result = subprocess.run([
         sys.executable, '-I', '-c',
-        'import vasp_sawf.inputs, vasp_sawf.wavecar, vasp_sawf.symmetry, vasp_sawf.localize',
+        'import vasp_sawf.inputs, vasp_sawf.wavecar, vasp_sawf.symmetry, vasp_sawf.localize, vasp_sawf.wanproj',
     ], cwd=tmp_path, capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stderr

@@ -1,1 +1,1 @@
-"""Internal implementation shared by the two computation entry points."""
+"""Reuse VASP SCDM interfaces for SAWF models and phase-preserving WANPROJ exports."""

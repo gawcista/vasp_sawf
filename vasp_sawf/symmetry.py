@@ -461,7 +461,7 @@ def _check_coefficient_closure(report, value):
         metric='relative_Frobenius_coefficient_reconstruction', raw_value=float(value),
         reference_tolerance=_GATE,
         reference_status='within_reference' if value <= _GATE else 'above_reference',
-        reference_basis='The original 1e-6 is only a numerical reference; see ACCEPTANCE.md for dataset-specific physical acceptance')
+        reference_basis='The original 1e-6 is only a numerical reference; see README.md#numerical-scope for dataset-specific physical acceptance')
     report['physical_acceptance_status'] = 'not_assessed'
     if accepted:
         report['physical_acceptance_status'] = 'accepted_for_single_particle_model'

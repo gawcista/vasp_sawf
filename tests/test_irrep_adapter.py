@@ -116,7 +116,7 @@ def test_invalid_or_unsupported_input_is_rejected(problem):
 
 
 def test_export_cli_refuses_protected_output_before_reading_wavecar(tmp_path):
-    output = tmp_path / 'protected-new'
+    output = tmp_path / 'WAVECAR'
     environment = dict(os.environ, PYTHONDONTWRITEBYTECODE='1')
     environment.pop('PYTHONPATH', None)
     result = subprocess.run([sys.executable, '-I', '-m', 'vasp_sawf.extract_symmetry',
@@ -124,8 +124,25 @@ def test_export_cli_refuses_protected_output_before_reading_wavecar(tmp_path):
                              '--outcar', str(tmp_path/'OUTCAR'), '--output', str(output)],
                             cwd=tmp_path, env=environment, text=True, capture_output=True)
     assert result.returncode != 0
-    assert 'outside the original input directory' in result.stderr
+    assert 'Output' in result.stderr
     assert not output.exists()
+
+
+def test_export_cli_default_output_creates_only_result_child(tmp_path):
+    source = tmp_path / 'inputs'
+    source.mkdir()
+    original = source / 'wannier90.win'
+    original.write_bytes(b'Original input\n')
+    environment = dict(os.environ, PYTHONDONTWRITEBYTECODE='1',
+                       XDG_CACHE_HOME=str(tmp_path / 'user-cache'))
+    for name in ('PYTHONPATH', 'NUMBA_CACHE_DIR', 'MPLCONFIGDIR'):
+        environment.pop(name, None)
+    result = subprocess.run([sys.executable, '-I', '-m', 'vasp_sawf.extract_symmetry'],
+                            cwd=source, env=environment, text=True, capture_output=True, timeout=60)
+    assert result.returncode == 1, result.stderr
+    assert (source / 'symmetry' / 'report.json').is_file()
+    assert original.read_bytes() == b'Original input\n'
+    assert set(path.name for path in source.iterdir()) == {'wannier90.win', 'symmetry'}
 
 
 @pytest.mark.real_data

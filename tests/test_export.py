@@ -207,7 +207,7 @@ def test_export_rejects_unsupported_geometry_before_coefficient_io(tmp_path, mon
     assert not (output / 'bloch.npz').exists()
 
 
-def test_export_never_overwrites_or_writes_into_original_input_tree(tmp_path):
+def test_export_never_overwrites_existing_outputs_or_input_directory(tmp_path):
     from vasp_sawf.symmetry import export_symmetry
 
     source = tmp_path / 'inputs'
@@ -216,15 +216,68 @@ def test_export_never_overwrites_or_writes_into_original_input_tree(tmp_path):
     output.mkdir()
     marker = output / 'report.json'
     marker.write_text('original')
-    for target in (output, source / 'new'):
+    for target in (output, marker, source):
         with pytest.raises(ValueError):
             export_symmetry(source / 'wannier90', source / 'WAVECAR', source / 'OUTCAR', target)
     assert marker.read_text() == 'original'
-    assert not (source / 'new').exists()
+
+
+def test_export_creates_new_child_output_without_changing_inputs(tmp_path):
+    from vasp_sawf.symmetry import export_symmetry
+
+    source = tmp_path / 'inputs'
+    source.mkdir()
+    original = source / 'wannier90.win'
+    original.write_bytes(b'Original input remains untouched\n')
+    output = source / 'symmetry'
+    with pytest.raises(FileNotFoundError):
+        export_symmetry(source / 'wannier90', source / 'WAVECAR', source / 'OUTCAR', output)
+    assert original.read_bytes() == b'Original input remains untouched\n'
+    assert set(path.name for path in source.iterdir()) == {'wannier90.win', 'symmetry'}
+    assert json.loads((output / 'report.json').read_text())['status'] == 'not_ready'
+
+
+@pytest.mark.parametrize('name', ['WAVECAR', 'OUTCAR', 'wannier90', 'wannier90.win',
+                                 'wannier90.amn', 'wannier90.mmn', 'wannier90.eig'])
+@pytest.mark.parametrize('child', ['', 'child'])
+def test_export_never_creates_directories_at_missing_input_paths(tmp_path, name, child):
+    from vasp_sawf.symmetry import export_symmetry
+
+    output = tmp_path / name / child
+    with pytest.raises(ValueError, match='Output'):
+        export_symmetry(tmp_path / 'wannier90', tmp_path / 'WAVECAR', tmp_path / 'OUTCAR', output)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_export_does_not_create_missing_input_tree_as_output(tmp_path):
+    from vasp_sawf.symmetry import export_symmetry
+
+    source = tmp_path / 'missing'
+    with pytest.raises(ValueError, match='Output'):
+        export_symmetry(source / 'wannier90', source / 'WAVECAR', source / 'OUTCAR', source)
+    assert not source.exists()
+
+
+@pytest.mark.parametrize('existing_target', [False, True])
+def test_export_refuses_output_symlinks_without_changing_target(tmp_path, existing_target):
+    from vasp_sawf.symmetry import export_symmetry
+
+    actual = tmp_path / 'target'
+    if existing_target:
+        actual.mkdir()
+        (actual / 'keep').write_text('original')
+    link = tmp_path / 'symmetry'
+    link.symlink_to(actual)
+    with pytest.raises(ValueError, match='Output'):
+        export_symmetry(tmp_path / 'wannier90', tmp_path / 'WAVECAR', tmp_path / 'OUTCAR', link)
+    assert link.is_symlink()
+    assert actual.exists() == existing_target
+    if existing_target:
+        assert (actual / 'keep').read_text() == 'original'
 
 
 @pytest.mark.parametrize('suffix', ['win', 'amn', 'eig', 'mmn'])
-def test_export_protects_actual_parent_of_symlinked_interfaces(tmp_path, suffix):
+def test_export_protects_actual_file_of_symlinked_interfaces(tmp_path, suffix):
     from vasp_sawf.symmetry import export_symmetry
 
     inputs, actual = tmp_path / 'inputs', tmp_path / 'actual'
@@ -233,7 +286,7 @@ def test_export_protects_actual_parent_of_symlinked_interfaces(tmp_path, suffix)
     original = actual / f'source.{suffix}'
     original.write_text('protected input')
     (inputs / f'wannier90.{suffix}').symlink_to(original)
-    target = actual / 'new-output'
+    target = original / 'new-output'
     with pytest.raises(ValueError, match='Output'):
         export_symmetry(inputs / 'wannier90', inputs / 'WAVECAR', inputs / 'OUTCAR', target)
     assert not target.exists()

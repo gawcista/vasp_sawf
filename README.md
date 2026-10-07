@@ -27,20 +27,40 @@ For development, use `python -m pip install -e ".[test]"`. `requirements.lock` i
 
 The original `.win/.amn/.mmn/.eig` files share a seed prefix. WIN must contain the full lattice, atomic structure, and complete k-point mesh. Provide WAVECAR saved at the end of the same interface calculation and its OUTCAR, including reciprocal folding tables and explicit zero MAGMOM. Matching band energies alone does not identify a shared Bloch gauge. An inherited SCF WAVECAR requires evidence that it matches the generated interfaces; an `ALGO=None` run alone does not establish that relationship.
 
-Run on the machine holding WAVECAR:
+Run on allocated compute resources on the machine holding WAVECAR:
 
 ```bash
 cd /path/to/interface
-sawf-extract --output /path/to/results/symmetry
+sawf-extract
 ```
 
-Defaults are `--seed wannier90 --wavecar WAVECAR --outcar OUTCAR`. Override paths as needed. All computational outputs require a new directory outside the input directories; existing outputs and symlinks are rejected.
+Defaults are `--seed wannier90 --wavecar WAVECAR --outcar OUTCAR --output symmetry`. The program creates `./symmetry` automatically; a separate job directory is unnecessary. Use `--output PATH` to choose another new directory. Existing output files or directories, output symlinks, and paths that collide with input files are rejected. Original inputs remain unchanged.
+
+Extraction caches default to `${XDG_CACHE_HOME}/vasp_sawf` when `XDG_CACHE_HOME` is absolute, otherwise `~/.cache/vasp_sawf`, with separate `numba` and `matplotlib` subdirectories. Explicit `NUMBA_CACHE_DIR` and `MPLCONFIGDIR` settings take precedence.
 
 Extraction reads selected-band records with complete G vectors and both spinor components. It anchors the representation using IrRep, transports it with native PAW MMN, and checks independent IBZ transformations, group composition, time reversal, and covariance. It does not read, copy, or hash the entire WAVECAR. NNKP and UNK are unnecessary.
 
 The outputs `bloch.npz` and `report.json` form one bound bundle. Download both along with the unchanged original WIN/AMN/MMN/EIG for localization.
 
-Independent stored k points can be processed in parallel. `--workers N` and `--memory-gb GIB` set upper limits; CPU allocation, coefficient counts, and available memory can reduce concurrency. Under Slurm request one task with multiple CPUs, e.g. `sbatch --cpus-per-task=8 extract_ada.sbatch INPUT_DIR OUTPUT_DIR`; specify your cluster's partition, memory, and time separately. The helper uses the installed package. No jobs are submitted automatically.
+Independent stored k points can be processed in parallel. `--workers N` and `--memory-gb GIB` set upper limits; CPU allocation, coefficient counts, and available memory can reduce concurrency. Under Slurm request one task with multiple CPUs. For an exclusive ADA large-memory node, save this script in the interface directory and submit it with the installed environment active:
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=SAWF
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=72
+#SBATCH --hint=nomultithread
+#SBATCH --partition=p.large
+#SBATCH --exclusive
+#SBATCH --mem=0
+#SBATCH --time=24:00:00
+
+set -euo pipefail
+srun sawf-extract
+```
+
+Submit from the interface directory so the default input names and `./symmetry` resolve there. The program selects workers automatically from the allocation and available memory. The optional [extract_ada.sbatch](extract_ada.sbatch) helper instead takes `INPUT_DIR OUTPUT_DIR` arguments and resource options supplied to `sbatch`. No jobs are submitted automatically.
 
 ## Symmetry-adapted localization
 
@@ -55,6 +75,8 @@ sawf-run \
 ```
 
 For independent target orbits, repeat `--center X Y Z --orbital NAME` in matching order. Each center is one orbit representative; symmetry-related centers are generated automatically. The expanded target must span every selected band. `Projection` defines the target representation and does not replace the original SCDM AMN.
+
+Localization still requires a new output directory outside its input directories and never overwrites an existing result.
 
 The program first localizes the original guess to determine a reversible column/cell alignment, then runs SAWF from the aligned SCDM guess. Exhausting the iteration budget is an error. It does not drop bands or average the Hamiltonian in postprocessing.
 

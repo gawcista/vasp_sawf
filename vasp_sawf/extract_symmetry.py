@@ -11,14 +11,18 @@ def main():
     parser.add_argument('--seed', default=Path('wannier90'), type=Path, help='Common interface file prefix without an extension')
     parser.add_argument('--wavecar', default=Path('WAVECAR'), type=Path, help='WAVECAR saved at the end of the same interface calculation')
     parser.add_argument('--outcar', default=Path('OUTCAR'), type=Path, help='OUTCAR from the same interface calculation')
-    parser.add_argument('--output', required=True, type=Path, help='New symmetry package output directory')
+    parser.add_argument('--output', default=Path('symmetry'), type=Path, help='New symmetry package output directory; existing paths are never overwritten')
     parser.add_argument('--workers', type=int, default=None, help='Maximum worker processes; automatic from the Slurm CPU allocation, otherwise one')
     parser.add_argument('--memory-gb', type=float, default=None, help='Optional memory budget in GiB; capped by available memory')
     args = parser.parse_args()
     for name in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'NUMBA_NUM_THREADS'):
         os.environ[name] = '1'
-    os.environ.setdefault('NUMBA_CACHE_DIR', str(args.output.resolve().parent / '.cache' / 'numba'))
-    os.environ.setdefault('MPLCONFIGDIR', str(args.output.resolve().parent / '.cache' / 'matplotlib'))
+    cache_root = Path(os.environ.get('XDG_CACHE_HOME', ''))
+    if not cache_root.is_absolute():
+        cache_root = Path.home() / '.cache'
+    cache_root = cache_root / 'vasp_sawf'
+    os.environ.setdefault('NUMBA_CACHE_DIR', str(cache_root / 'numba'))
+    os.environ.setdefault('MPLCONFIGDIR', str(cache_root / 'matplotlib'))
     sys.dont_write_bytecode = True
     from vasp_sawf.symmetry import export_symmetry
     try:

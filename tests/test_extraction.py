@@ -34,9 +34,44 @@ def test_cli_uses_standard_vasp_names_in_current_directory(tmp_path, monkeypatch
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(symmetry, 'export_symmetry', capture)
-    monkeypatch.setattr(sys, 'argv', ['sawf-extract', '--output', '../symmetry'])
+    for name in ('NUMBA_CACHE_DIR', 'MPLCONFIGDIR'):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'user-cache'))
+    monkeypatch.setattr(sys, 'argv', ['sawf-extract'])
     assert main() == 0
-    assert calls[0][:4] == (Path('wannier90'), Path('WAVECAR'), Path('OUTCAR'), Path('../symmetry'))
+    assert calls[0][:4] == (Path('wannier90'), Path('WAVECAR'), Path('OUTCAR'), Path('symmetry'))
+
+
+@pytest.mark.parametrize('cache_setting', ['absolute', 'relative', 'unset', 'explicit'])
+def test_cli_cache_defaults_stay_outside_input_and_preserve_explicit_settings(tmp_path, monkeypatch, cache_setting):
+    from vasp_sawf.extract_symmetry import main
+    import vasp_sawf.symmetry as symmetry
+
+    source, home = tmp_path / 'inputs', tmp_path / 'home'
+    source.mkdir()
+    home.mkdir()
+    monkeypatch.chdir(source)
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.delenv('XDG_CACHE_HOME', raising=False)
+    for name in ('NUMBA_CACHE_DIR', 'MPLCONFIGDIR'):
+        monkeypatch.delenv(name, raising=False)
+    if cache_setting == 'absolute':
+        monkeypatch.setenv('XDG_CACHE_HOME', str(tmp_path / 'user-cache'))
+        expected = tmp_path / 'user-cache' / 'vasp_sawf'
+    else:
+        expected = home / '.cache' / 'vasp_sawf'
+    if cache_setting == 'relative':
+        monkeypatch.setenv('XDG_CACHE_HOME', 'relative-cache')
+    if cache_setting == 'explicit':
+        expected = tmp_path / 'caller-cache'
+        monkeypatch.setenv('NUMBA_CACHE_DIR', str(expected / 'numba'))
+        monkeypatch.setenv('MPLCONFIGDIR', str(expected / 'matplotlib'))
+    monkeypatch.setattr(sys, 'argv', ['sawf-extract', '--output', 'symmetry'])
+    monkeypatch.setattr(symmetry, 'export_symmetry', lambda *args, **kwargs: {'status': 'ready'})
+    assert main() == 0
+    assert Path(os.environ['NUMBA_CACHE_DIR']) == expected / 'numba'
+    assert Path(os.environ['MPLCONFIGDIR']) == expected / 'matplotlib'
+    assert list(source.iterdir()) == []
 
 
 def test_worker_budget_limits_cpu_count_and_memory_without_changing_kpoints():

@@ -516,11 +516,11 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
     started = time.perf_counter()
     seed, wavecar, outcar = (Path(p).resolve() for p in (seed, wavecar, outcar))
     output = Path(output_dir).resolve()
-    protected = {p.parent for p in (seed, wavecar, outcar)}
-    protected.update(Path(f'{seed}.{suffix}').resolve().parent for suffix in ('win', 'amn', 'eig', 'mmn'))
+    protected = {seed, wavecar, outcar}
+    protected.update(Path(f'{seed}.{suffix}').resolve() for suffix in ('win', 'amn', 'eig', 'mmn'))
     if (output.exists() or Path(output_dir).is_symlink()
-            or any(output.is_relative_to(parent) for parent in protected)):
-        raise ValueError('Output must be a new directory outside the original input directory; overwriting is forbidden')
+            or any(output.is_relative_to(path) or path.is_relative_to(output) for path in protected)):
+        raise ValueError('Output must be a new directory separate from input file paths; existing paths and symlinks are forbidden')
     output.mkdir(parents=True, exist_ok=False)
     report = dict(schema='sawf-bridge-bloch-v1', status='not_ready', sawf_ready=False,
                   gauge_status='unproven', residuals={}, numerical_gate=_GATE,

@@ -19,9 +19,10 @@ from .inputs import read_inputs
 
 def _square_dimension(symmetrizer):
     nb = symmetrizer.NB
-    if (not isinstance(nb, (int, np.integer)) or nb <= 0 or nb % 2
+    spinor = getattr(getattr(symmetrizer, 'spacegroup', None), 'spinor', True)
+    if (not isinstance(nb, (int, np.integer)) or nb <= 0 or (spinor and nb % 2)
             or symmetrizer.num_wann != nb):
-        raise ValueError("Strict SOC entry requires NB=NW to be a positive even integer, retaining all target bands")
+        raise ValueError("Strict entry requires positive NB=NW and an even dimension for spinors, retaining all target bands")
     return int(nb)
 
 
@@ -169,7 +170,8 @@ def _target_representation(sym, centers, orbitals):
     from wannierberri.symmetry.Dwann import Dwann
 
     centers, orbitals = _normalize_target_orbits(centers, orbitals)
-    projections = [Projection(position_num=c, spacegroup=sym.spacegroup, orbital=o, spinor=True)
+    spinor = bool(sym.spacegroup.spinor)
+    projections = [Projection(position_num=c, spacegroup=sym.spacegroup, orbital=o, spinor=spinor)
                    for c, o in zip(centers, orbitals, strict=True)]
     sym.set_D_wann_from_projections(projections)
     blocks, positions, orbits = [], [], []
@@ -179,14 +181,15 @@ def _target_representation(sym, centers, orbitals):
         for orbital in projection.orbitals:
             block = Dwann(spacegroup=sym.spacegroup, positions=projection.positions,
                           orbital=orbital, orbitalrotator=sym.orbitalrotator,
-                          basis_list=projection.basis_list, spinor=True)
+                          basis_list=projection.basis_list, spinor=spinor)
             blocks.append(block)
             positions.extend(np.repeat(np.asarray(block.orbit), block.num_orbitals, axis=0))
     positions = np.asarray(positions)
     if positions.shape != (sym.num_wann, 3):
         raise ValueError('Target column positions do not match the full Wannier dimension')
     descriptor = dict(orbits=orbits, column_centers_fractional=positions.tolist(),
-        basis_convention='Input orbit order, then WannierBerri orbital block, orbit position, real orbital, interlaced spin',
+        basis_convention='Input orbit order, then WannierBerri orbital block, orbit position, real orbital'
+                         + (', interlaced spin' if spinor else ''),
         center_constraint='Affine center covariance under the declared site permutations and integer cell shifts; symmetry-allowed coordinates may relax')
     if len(orbits) == 1:
         descriptor.update(position_fractional=centers[0].tolist(), orbital=orbitals[0])
@@ -417,6 +420,75 @@ def wannierise_strict(data, symmetrizer, *, num_iter=1000, conv_tol=1e-9, num_it
                 physical_source_and_target_validation="required_before_call_not_certified_by_driver")
 
 
+def _validate_spin_metadata(arrays, report, *, win_text=None):
+    """Bind explicit spin semantics; older packages describe the original SOC workflow."""
+    keys = ('spinor', 'source_ispin', 'spin_channel', 'antiunitary_kind')
+    spin = report.get('spin')
+    if spin is None:
+        if any(key in arrays for key in (*keys, 'time_reversal_square')):
+            raise ValueError('Spin arrays require their complete report metadata')
+        spin = dict(spinor=True, source_ispin=1, spin_channel=1,
+                    antiunitary_kind='physical_time_reversal', time_reversal_square=-1)
+    else:
+        if (not isinstance(spin, dict) or type(spin.get('spinor')) is not bool
+                or type(spin.get('source_ispin')) is not int or spin['source_ispin'] not in (1, 2)
+                or type(spin.get('spin_channel')) is not int
+                or not 1 <= spin['spin_channel'] <= spin['source_ispin']):
+            raise ValueError('Invalid source spin mode or selected channel in the symmetry report')
+        if spin['spinor'] and spin['source_ispin'] != 1:
+            raise ValueError('Spinor WAVECAR requires a single VASP spin channel')
+        kind = ('physical_time_reversal' if spin['spinor'] else
+                'orbital_complex_conjugation' if spin['source_ispin'] == 1 else
+                'channel_complex_conjugation')
+        square = -1 if spin['spinor'] else 1
+        if (spin.get('antiunitary_kind') != kind or type(spin.get('time_reversal_square')) is not int
+                or spin['time_reversal_square'] != square):
+            raise ValueError('Antiunitary meaning or square disagrees with the source spin mode')
+        for key in keys:
+            value = arrays.get(key)
+            if (value is None or value.ndim != 0 or type(value.item()) is not type(spin[key])
+                    or value.item() != spin[key]):
+                raise ValueError(f'Packaged spin metadata disagrees on {key}')
+        if 'time_reversal_square' in arrays:
+            value = arrays['time_reversal_square']
+            if value.ndim != 0 or type(value.item()) is not int or value.item() != square:
+                raise ValueError('Packaged antiunitary square disagrees with the spin mode')
+        if 'spacegroup_spinor' not in arrays:
+            raise ValueError('Explicit spin metadata requires the saved space-group spinor flag')
+        context = report.get('outcar', {}).get('spin_context', {})
+        if (not spin['spinor'] and 'ISPIN' in context and context['ISPIN'] != spin['source_ispin']
+                or 'LNONCOLLINEAR' in context and context['LNONCOLLINEAR'] != spin['spinor']):
+            raise ValueError('OUTCAR spin context disagrees with the packaged spin mode')
+        channels = report.get('wavecar', {}).get('spin_channels', spin['source_ispin'])
+        if channels != spin['source_ispin']:
+            raise ValueError('WAVECAR channel count disagrees with the packaged spin mode')
+    if 'spacegroup_spinor' in arrays:
+        group_spinor = np.asarray(arrays['spacegroup_spinor'])
+        if (group_spinor.ndim != 0 or group_spinor.dtype != np.dtype(bool)
+                or group_spinor.item() != spin['spinor']):
+            raise ValueError('Space-group spinor flag disagrees with packaged spin semantics')
+    if win_text is not None:
+        uncommented = '\n'.join(re.split(r'[!#]', row, maxsplit=1)[0] for row in win_text.splitlines())
+        values = re.findall(r'^[ \t]*spinors[ \t]*[=:][ \t]*([^\n]*)$', uncommented, re.I | re.M)
+        if len(values) > 1:
+            raise ValueError('WIN spinors must not be duplicated')
+        if values:
+            booleans = {'true': True, 't': True, 'false': False, 'f': False}
+            value = booleans.get(values[0].lower().strip().strip('.'))
+            if value is None or value != spin['spinor']:
+                raise ValueError('WIN spinors disagrees with the packaged spin mode')
+        channels = re.findall(r'^[ \t]*spin[ \t]*[=:][ \t]*([^\n]*)$', uncommented, re.I | re.M)
+        if len(channels) > 1:
+            raise ValueError('WIN spin must not be duplicated')
+        if channels:
+            selected = {'up': 1, 'down': 2}.get(channels[0].lower().strip())
+            if selected is None:
+                raise ValueError('WIN spin must be up or down')
+            if spin['source_ispin'] == 2 and selected != spin['spin_channel']:
+                raise ValueError('WIN spin disagrees with the packaged selected channel')
+    return dict(spin)
+
+
 def _read_bound_package(folder, source_hashes):
     from .symmetry import _check_coefficient_closure
     folder = Path(folder).resolve()
@@ -441,6 +513,7 @@ def _read_bound_package(folder, source_hashes):
     for key, value in arrays.items():
         if value.dtype.hasobject or (np.issubdtype(value.dtype, np.number) and not np.isfinite(value).all()):
             raise ValueError(f'Symmetry package field {key} is nonfinite or not a safe array')
+    _validate_spin_metadata(arrays, report)
     closure = report.get('residuals',{}).get('ibz_coefficient_closure_relative_max')
     if not isinstance(closure,(int,float)) or isinstance(closure,bool):
         raise ValueError('Symmetry package is missing a valid coefficient-closure record')
@@ -450,7 +523,7 @@ def _read_bound_package(folder, source_hashes):
     decision = _check_coefficient_closure(report,closure)
     if previous_acceptance == 'accepted_for_single_particle_model' and decision is None:
         raise ValueError('The claimed physical acceptance in the symmetry package does not match its actual provenance')
-    if legacy and (decision is None or digest != decision['reviewed_legacy_bloch_sha256']):
+    if legacy and (decision is None or digest != decision.get('reviewed_legacy_bloch_sha256')):
         raise ValueError('The legacy trial package is not covered by the current approved decision')
     report['source_report_status'] = report['status']
     report.update(status='ready',sawf_ready=True,gauge_status='verified_mmn_anchor_transport')
@@ -545,7 +618,7 @@ def _run_sawf(seed, symmetry_dir, output, report, num_iter,
     from irrep.spacegroup import SpaceGroup
     from wannierberri.system.system_w90 import System_w90
     from .bands import evaluate_hamiltonian, evaluate_bands
-    from .symmetry import _cell_from_win, _validate_grey_group
+    from .symmetry import _cell_from_win, _validate_grey_group, _spacegroup_from_context
     from .symmetry import build_symmetry_maps, make_symmetrizer, group_residuals, mmn_translation_phases
 
     from .inputs import load_wannier_data
@@ -556,6 +629,15 @@ def _run_sawf(seed, symmetry_dir, output, report, num_iter,
         raise ValueError('Symmetry package is missing the original WAVECAR band count')
     bundle = read_inputs(seed, source_nb=source_nb)
     arrays, source_report = _read_bound_package(symmetry_dir, bundle.hashes)
+    win_text = Path(f'{seed}.win').read_text()
+    spin = _validate_spin_metadata(arrays, source_report, win_text=win_text)
+    spinor = spin['spinor']
+    report['spin'] = spin
+    report['antiunitary_scope'] = ('Physical spinful time reversal' if spinor else
+        'Orbital complex conjugation with square +1; the implicit spin degeneracy is not expanded'
+        if spin['source_ispin'] == 1 else
+        'Complex conjugation within the selected collinear spin channel; physical spin-exchanging '
+        'time reversal and cross-channel magnetic operations are not imposed')
     report.update(source_hashes=bundle.hashes, bands_vasp_1based=bundle.bands_vasp_1based.tolist(),
                   source_num_bands=source_nb, mesh=bundle.mesh.tolist(),
                   symmetry_package_sha256=source_report['bloch_sha256'], numerical_gate=1e-6,
@@ -571,8 +653,8 @@ def _run_sawf(seed, symmetry_dir, output, report, num_iter,
     report['coefficient_closure'] = source_report['coefficient_closure']
     report['symmetry_source_report_status'] = source_report['source_report_status']
     nk,nb,nw = bundle.amn.shape
-    if nb != nw or nb < 2 or nb % 2:
-        raise ValueError('Current SAWF requires a complete square subspace NB=NW with positive even dimension')
+    if nb != nw or nb < 1 or (spinor and nb % 2):
+        raise ValueError('SAWF requires positive NB=NW, with even dimension for a spinor subspace')
     for key, expected in [('kpoints', bundle.kpoints), ('eig', bundle.eig),
                           ('bands_vasp_1based', bundle.bands_vasp_1based)]:
         if not np.array_equal(arrays[key], expected):
@@ -580,9 +662,12 @@ def _run_sawf(seed, symmetry_dir, output, report, num_iter,
     group_fields = {k[len('spacegroup_'):]: v.item() if v.ndim == 0 else v
                     for k, v in arrays.items() if k.startswith('spacegroup_')}
     sg = SpaceGroup(**group_fields)
-    positions, types, _ = _cell_from_win(Path(f'{seed}.win').read_text(), bundle.lattice)
-    actual_sg = SpaceGroup.from_cell(cell=(bundle.lattice,positions,types), spinor=True,
-                                     magmom=True, include_TR=True, verbosity=0)
+    positions, types, _ = _cell_from_win(win_text, bundle.lattice)
+    if 'spin' in source_report:
+        actual_sg = _spacegroup_from_context(bundle, positions, types, source_report['outcar']['spin_context'])
+    else:
+        actual_sg = SpaceGroup.from_cell(cell=(bundle.lattice,positions,types), spinor=True,
+                                         magmom=True, include_TR=True, verbosity=0)
     for key, value in actual_sg.as_dict().items():
         if not np.array_equal(np.asarray(value), arrays[f'spacegroup_{key}']):
             raise ValueError(f'Packaged space group disagrees with independent reconstruction from this WIN: {key}')
@@ -609,10 +694,11 @@ def _run_sawf(seed, symmetry_dir, output, report, num_iter,
                               kpoints=bundle.kpoints, translations_diff=sym.translations_diff)
     _gate(report, 'bloch_group_composition_max', product['group_composition_max'])
     t = _validate_grey_group(sg)
-    _gate(report, 'bloch_TR_squared_plus_identity_max', np.max(abs(d[t, kmap[t]] @ d[t].conj()+np.eye(nb))))
+    square_key = 'bloch_TR_squared_plus_identity_max' if spinor else 'bloch_K_squared_minus_identity_max'
+    _gate(report, square_key, np.max(abs(d[t, kmap[t]] @ d[t].conj()-spin['time_reversal_square']*np.eye(nb))))
     target_blocks, target_centers, target_report = _target_representation(sym, center, orbital)
     if sym.num_wann != nb:
-        raise ValueError(f'Target representation produces {sym.num_wann} spinor functions, inconsistent with {nb} target bands')
+        raise ValueError(f'Target representation produces {sym.num_wann} functions, inconsistent with {nb} target bands')
     chars = [abs(np.trace(d[s,k])-sum(np.trace(block) for block in sym.D_wann_blocks[i][s]))
              for i,k in enumerate(sym.kptirr) for s in sym.isym_little[i] if not sym.time_reversals[s]]
     _gate(report, 'target_unitary_character_max', np.max(chars))
@@ -625,13 +711,14 @@ def _run_sawf(seed, symmetry_dir, output, report, num_iter,
     path = geometry = None
     if dft_eigenval is not None:
         from .bands import read_dft_eigenval, read_win_path, path_geometry
-        path = read_dft_eigenval(dft_eigenval,bundle.bands_vasp_1based)
+        path = read_dft_eigenval(dft_eigenval,bundle.bands_vasp_1based,
+                                spin_channel=spin['spin_channel'], source_ispin=spin['source_ispin'])
         geometry = path_geometry(path['kpoints'],read_win_path(f'{seed}.win'),bundle.lattice)
     data, _ = load_wannier_data(seed,source_nb=source_nb)
     ordinary_u, ordinary_centers, ordinary_report = _ordinary_initial_gauge(data,num_iter=num_iter)
     ordinary_system = None
     if dft_eigenval is not None:
-        ordinary_system = System_w90(data,symmetrize=False,fftlib='numpy',spinor=True,
+        ordinary_system = System_w90(data,symmetrize=False,fftlib='numpy',spinor=spinor,
                                      berry=False,morb=False,spin=False,wannier_centers_from_chk=True)
     initial, alignment = align_scdm_initial_gauge(bundle.amn,ordinary_u,ordinary_centers,
                                                  bundle.lattice,bundle.kpoints,sym,
@@ -654,7 +741,7 @@ def _run_sawf(seed, symmetry_dir, output, report, num_iter,
     report.update(centers_angstrom=centers.tolist(), spreads_angstrom2=spreads.tolist(),
                   total_spread_angstrom2=float(sum(spreads)))
     data.irreducible = False
-    system = System_w90(data, symmetrize=False, fftlib='numpy', spinor=True,
+    system = System_w90(data, symmetrize=False, fftlib='numpy', spinor=spinor,
                         berry=False, morb=False, spin=False, wannier_centers_from_chk=True)
     exact_mesh = np.rint(bundle.kpoints*bundle.mesh)/bundle.mesh
     _gate(report, 'mesh_H_roundtrip_eV', np.max(abs(evaluate_hamiltonian(system, exact_mesh)-hk)))
@@ -669,9 +756,10 @@ def _run_sawf(seed, symmetry_dir, output, report, num_iter,
         residuals.append(float(np.max(abs(evaluate_hamiltonian(system,qg)-predicted))))
     _gate(report, 'off_mesh_H_covariance_eV', np.max(residuals))
     report['off_mesh_H_covariance_per_operation_eV'] = residuals
-    trim = np.array([[a,b,c] for a in (0,.5) for b in (0,.5) for c in (0,.5)])
-    energies = evaluate_bands(system, trim)
-    _gate(report, 'TRIM_Kramers_max_split_eV', np.max(abs(energies[:,1::2]-energies[:,::2])))
+    if spinor:
+        trim = np.array([[a,b,c] for a in (0,.5) for b in (0,.5) for c in (0,.5)])
+        energies = evaluate_bands(system, trim)
+        _gate(report, 'TRIM_Kramers_max_split_eV', np.max(abs(energies[:,1::2]-energies[:,::2])))
     _gate(report, 'target_center_covariance_max_abs_angstrom', _center_covariance(sym, centers))
     report['target_center_displacement_max_abs_angstrom'] = float(np.max(abs(centers-target_centers @ bundle.lattice)))
     if not np.isfinite(spreads).all() or np.any(spreads < 0):
@@ -697,16 +785,21 @@ def _run_sawf(seed, symmetry_dir, output, report, num_iter,
             segment_slices=np.array(geometry['segment_slices']),
             tick_positions=geometry['tick_positions_inv_angstrom'],tick_labels=geometry['tick_labels'],
             kpoints=path['kpoints'],dft=path['eigenvalues_eV'],wannier=eordinary,sawf=esawf,
-            energy_reference_ev=energy_reference_ev,sawf_note='')
+            energy_reference_ev=energy_reference_ev,sawf_note='',
+            source_ispin=spin['source_ispin'], spin_channel=spin['spin_channel'], spinor=spinor)
         for name,energy in [('wannier',eordinary),('sawf',esawf)]:
             error = np.sort(energy,axis=1)-np.sort(path['eigenvalues_eV'],axis=1)
             report[name+'_path_error_ev'] = dict(max_abs=float(np.max(abs(error))),
                                                 rms=float(np.sqrt(np.mean(error**2))))
     report['localisation'].pop('convergence_history',None)
     from .wanproj import write_wanproj
-    report['wanproj'] = write_wanproj(
-        output/'WANPROJ', U=u, kpoints=bundle.kpoints,
-        bands_vasp_1based=bundle.bands_vasp_1based, source_nb=source_nb, mesh=bundle.mesh)
+    if spin['source_ispin'] == 2:
+        report['wanproj'] = dict(status='not_exported', reason='A standalone collinear spin-channel '
+            'model is not a complete two-channel VASP WANPROJ; both channel gauges are required')
+    else:
+        report['wanproj'] = write_wanproj(
+            output/'WANPROJ', U=u, kpoints=bundle.kpoints,
+            bands_vasp_1based=bundle.bands_vasp_1based, source_nb=source_nb, mesh=bundle.mesh)
     report.update(model_file='model.npz',model_sha256=hashlib.sha256(model_file.read_bytes()).hexdigest(),
                   status='ready',sawf_ready=True,
                   numerical_checks_passed=True,converged=True)

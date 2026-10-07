@@ -32,17 +32,22 @@ def evaluate_bands(system, kpoints_reduced):
     return np.linalg.eigvalsh(matrices)
 
 
-def read_dft_eigenval(path, bands_1based):
+def read_dft_eigenval(path, bands_1based, *, spin_channel=1, source_ispin=1):
     bands = list(bands_1based)
     if (not bands or any(isinstance(b, bool) or not isinstance(b, Integral) or b < 1 for b in bands)
             or any(b <= a for a, b in zip(bands, bands[1:]))):
         raise ValueError('Original DFT band indices must be strictly increasing positive integers')
     from pymatgen.io.vasp.outputs import Eigenval
+    from pymatgen.electronic_structure.core import Spin
+
+    if (type(source_ispin) is not int or source_ispin not in (1, 2)
+            or type(spin_channel) is not int or not 1 <= spin_channel <= source_ispin):
+        raise ValueError('Select a valid explicit EIGENVAL spin channel and source ISPIN')
 
     path = Path(path)
     lines = path.read_text().splitlines()
-    if len(lines) < 6 or int(lines[0].split()[-1]) != 1:
-        raise ValueError('This entry point requires an EIGENVAL with one energy block; SOC is checked separately from provenance')
+    if len(lines) < 6 or int(lines[0].split()[-1]) != source_ispin:
+        raise ValueError('EIGENVAL spin-channel count disagrees with the selected model source ISPIN')
     _, nk, nb = map(int, lines[5].split())
     if nk <= 0 or nb <= 0 or bands[-1] > nb:
         raise ValueError('Invalid DFT dimensions or original target band indices out of range')
@@ -56,7 +61,7 @@ def read_dft_eigenval(path, bands_1based):
         if len(rows[0]) != 4:
             raise ValueError('EIGENVAL k-point records must have 4 columns')
         for ib, row in enumerate(rows[1:], 1):
-            if len(row) != 3 or int(row[0]) != ib:
+            if len(row) != (3 if source_ispin == 1 else 5) or int(row[0]) != ib:
                 raise ValueError('EIGENVAL band records are missing, reordered, or have incorrect column counts')
         if not all(np.isfinite(float(x)) for row in rows for x in row):
             raise ValueError('EIGENVAL contains nonfinite values')
@@ -65,11 +70,15 @@ def read_dft_eigenval(path, bands_1based):
         raise ValueError('EIGENVAL contains extra records')
     parsed = Eigenval(path)
     kpoints = np.array(parsed.kpoints)
-    energies = next(iter(parsed.eigenvalues.values()))[:, np.array(bands) - 1, 0]
+    selected_spin = Spin.up if spin_channel == 1 else Spin.down
+    if selected_spin not in parsed.eigenvalues:
+        raise ValueError('EIGENVAL reader did not return the selected spin channel')
+    energies = parsed.eigenvalues[selected_spin][:, np.array(bands) - 1, 0]
     if kpoints.shape != (nk, 3) or energies.shape != (nk, len(bands)):
         raise ValueError('Official reader dimensions disagree with the header')
     return {'kpoints': kpoints, 'eigenvalues_eV': energies,
-            'bands_vasp_1based': np.array(bands), 'source_num_bands': nb}
+            'bands_vasp_1based': np.array(bands), 'source_num_bands': nb,
+            'source_ispin': source_ispin, 'spin_channel': spin_channel}
 
 
 def read_win_path(path):

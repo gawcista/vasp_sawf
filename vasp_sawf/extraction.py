@@ -124,7 +124,7 @@ def worker_plan(*, requested, allocated_cpus, jobs, memory_bytes, per_worker_byt
                 memory_policy='Estimate with headroom, not a guaranteed RSS bound; calibrate on allocated hardware')
 
 
-def evaluate_kpoint(wavecar, bands, lattice, kindex, group_dict, little_indices, source_identity, *, gamma=False):
+def evaluate_kpoint(wavecar, bands, lattice, kindex, group_dict, little_indices, source_identity, spin_channel=1, *, gamma=False):
     """Read one complete selected-band k point and return only small numerical results."""
     from irrep.spacegroup import SpaceGroup
     from .wavecar import read_selected_wavecar
@@ -132,7 +132,8 @@ def evaluate_kpoint(wavecar, bands, lattice, kindex, group_dict, little_indices,
 
     started = time.perf_counter()
     stored = read_selected_wavecar(wavecar, bands_1based=bands, kpoints_1based=[kindex],
-                                   lattice=lattice, expected_source_identity=source_identity)
+                                   lattice=lattice, expected_source_identity=source_identity,
+                                   spinor=bool(group_dict['spinor']), spin_channel=spin_channel)
     read_seconds = time.perf_counter() - started
     raw = stored.kpoints[0]
     point = copy.copy(raw)

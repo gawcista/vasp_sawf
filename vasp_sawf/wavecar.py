@@ -21,29 +21,32 @@ class GAssociation:
     corrected_to_native: np.ndarray
 
 
-def repair_vasp_g_association(ig, coefficients, *, coefficient_count, rtag):
-    """Reassociate coefficients in standard noncollinear VASP record order, returning independent arrays.
+def repair_vasp_g_association(ig, coefficients, *, coefficient_count, rtag, spinor=True):
+    """Reassociate coefficients in standard VASP record order, returning independent arrays.
 
     Input must come from native reading without normalization, rotation, or G truncation; count comes from
     the WAVECAR k record. This checks ordering only; counts alone do not prove correct G enumeration.
     VASP order follows pinned pymatgen 2025.10.7 Wavecar._generate_G_points:
     z outermost, x innermost; each axis lists ascending nonnegative then ascending negative values.
-    A sufficiently large FFT box preserves the relative order of retained G points. Only two-component RTAG45200 is supported.
+    A sufficiently large FFT box preserves the relative order of retained G points. Only RTAG45200 is supported.
     """
     ig = np.asarray(ig)
     coefficients = np.asarray(coefficients)
     if rtag != 45200:
         raise GAssociationError('This adapter was validated only for RTAG45200; refusing to guess other precisions or formats')
+    if not isinstance(spinor, (bool, np.bool_)):
+        raise GAssociationError('spinor must be an explicit boolean')
+    components = 2 if spinor else 1
     if (ig.ndim != 2 or ig.shape[1] != 6 or len(ig) == 0
             or not np.issubdtype(ig.dtype, np.integer)):
         raise GAssociationError('ig must be a nonempty integer NG-by-6 array')
     ng = len(ig)
-    if coefficient_count != 2 * ng:
-        raise GAssociationError('Header coefficient count disagrees with the full two-component G count; G truncation is forbidden')
+    if coefficient_count != components * ng:
+        raise GAssociationError('Header coefficient count disagrees with the full G/component count; G truncation is forbidden')
     if (coefficients.ndim != 3 or coefficients.shape[0] == 0
-            or coefficients.shape[1:] != (ng, 2)
+            or coefficients.shape[1:] != (ng, components)
             or coefficients.dtype != np.dtype('complex64')):
-        raise GAssociationError('RTAG45200 coefficients must retain complex64 precision and NB-by-NG-by-2 layout')
+        raise GAssociationError('RTAG45200 coefficients must retain complex64 precision and NB-by-NG-by-component layout')
     if not np.all(np.isfinite(coefficients)):
         raise GAssociationError('Original coefficients contain nonfinite values')
     if len(np.unique(ig[:, :3], axis=0)) != ng:
@@ -77,14 +80,14 @@ def adapt_irrep_kpoint(kpoint, *, coefficient_count, rtag):
     """
     if version('irrep') != '2.6.3':
         raise GAssociationError('This adapter was audited only for IrRep2.6.3')
-    if not kpoint.spinor or kpoint.ik0 is None:
-        raise GAssociationError('A two-component Kpoint with its original k-point index is required')
+    if kpoint.ik0 is None:
+        raise GAssociationError('A Kpoint with its original k-point index is required')
     from irrep.kpoint import Kpoint
 
     association = repair_vasp_g_association(kpoint.ig, kpoint.WF,
-                                           coefficient_count=coefficient_count, rtag=rtag)
+                                           coefficient_count=coefficient_count, rtag=rtag, spinor=kpoint.spinor)
     result = Kpoint(ik=int(kpoint.ik0) - 1, num_bands=kpoint.num_bands,
-                    RecLattice=kpoint.RecLattice.copy(), spinor=True,
+                    RecLattice=kpoint.RecLattice.copy(), spinor=kpoint.spinor,
                     kpt=kpoint.k.copy(), WF=association.coefficients,
                     Energy=kpoint.Energy_raw.copy(), ig=association.ig,
                     upper=kpoint.upper, normalize=False, eKG=kpoint.eKG.copy())
@@ -118,6 +121,8 @@ class SelectedWavecar:
     read_ledger: tuple[dict, ...]
     source_status: str = 'unproven'
     gauge_status: str = 'unproven'
+    spinor: bool = True
+    spin_channel: int = 1
 
 
 @dataclass(frozen=True)
@@ -130,6 +135,8 @@ class WavecarMetadata:
     coefficient_counts: tuple[int, ...]
     source_identity: dict
     read_ledger: tuple[dict, ...]
+    spinor: bool = True
+    spin_channel: int = 1
 
 
 def _source_identity(path, stat):
@@ -189,8 +196,15 @@ def _open_wavecar(path):
             self.ledger = []
             self.context = {'kind': 'file_header'}
             self.bootstrap = True
+            self.verbosity = 0
+            self.f = open(filename, 'rb')
+            self.rl = 3
             try:
-                super().__init__(filename, verbosity=0)
+                # IrRep's constructor rejects collinear channels; retain its record methods.
+                self.rl, self.ispin, self.iprec = (int(value) for value in self.record(0))
+                self.nrec_enocc = None
+                self.nrec_kpoint = None
+                self.nrec_header = 2
             except Exception:
                 if hasattr(self, 'f'):
                     self.f.close()
@@ -211,8 +225,8 @@ def _open_wavecar(path):
             if self.bootstrap:
                 recl, nspin, rtag = (_positive_integer(v, name) for v, name in
                                      zip(data, ('RECL', 'NSPIN', 'RTAG'), strict=True))
-                if recl % 8 or recl < 104 or nspin != 1 or rtag != 45200:
-                    raise WavecarReadError('Only valid RTAG45200 single-channel spinor WAVECAR files are supported')
+                if recl % 8 or recl < 104 or nspin not in (1, 2) or rtag != 45200:
+                    raise WavecarReadError('Only valid RTAG45200 WAVECAR files with one or two spin channels are supported')
             return data
 
     reader = RecordedWavecar(str(path))
@@ -230,9 +244,9 @@ def _open_wavecar(path):
         if (4 + 3 * nb) * 8 > reader.rl:
             raise WavecarReadError('WAVECAR files with multiple energy records have not been validated; refusing to read')
         reader.set_nrec_kpoint(NBin=nb)
-        if reader.nrec_enocc != 1 or original_stat.st_size != reader.rl * (2 + nk * (1 + nb)):
+        if reader.nrec_enocc != 1 or original_stat.st_size != reader.rl * (2 + reader.ispin * nk * (1 + nb)):
             raise WavecarReadError('WAVECAR file size disagrees with the supported record layout')
-        header = WavecarHeader(reader.rl, 1, reader.iprec, nk, nb, cutoff,
+        header = WavecarHeader(reader.rl, reader.ispin, reader.iprec, nk, nb, cutoff,
                                wave_lattice, float(raw_header[12]), original_stat.st_size)
         _verify_open_source(reader, path, _source_identity(path, original_stat))
         return reader, header, original_stat, path
@@ -248,35 +262,49 @@ def inspect_wavecar(path):
     return header
 
 
-def _read_kpoint_metadata(reader, header, kindex, bands):
-    reader.context = {'kind': 'kpoint_header', 'kpoint_1based': kindex}
-    record = reader.record(reader.irec_start_k(kindex - 1), cnt=4 + 3 * header.num_bands)
+def _spin_components(header, spinor, spin_channel):
+    if not isinstance(spinor, (bool, np.bool_)):
+        raise WavecarReadError('spinor must be an explicit boolean')
+    _indices((spin_channel,), header.spin_channels, 'spin_channel')
+    if spinor and header.spin_channels != 1:
+        raise WavecarReadError('Two-component spinors require one WAVECAR spin channel')
+    return 2 if spinor else 1
+
+
+def _read_kpoint_metadata(reader, header, kindex, bands, components=2, spin_channel=1):
+    reader.context = {'kind': 'kpoint_header', 'kpoint_1based': kindex,
+                      'spin_channel_1based': int(spin_channel)}
+    stored_index = (spin_channel - 1) * header.num_kpoints + kindex - 1
+    record = reader.record(reader.irec_start_k(stored_index), cnt=4 + 3 * header.num_bands)
     if not np.isfinite(record).all():
         raise WavecarReadError('WAVECAR k record contains nonfinite values')
-    count = _positive_integer(record[0], 'spinor coefficient count')
-    if count % 2 or count * 8 > reader.rl:
-        raise WavecarReadError('Invalid two-component coefficient count or record byte range')
+    count = _positive_integer(record[0], 'coefficient count')
+    if count % components or count * 8 > reader.rl:
+        raise WavecarReadError('Invalid two-component coefficient count or record byte range' if components == 2
+                                else 'Invalid scalar coefficient count or record byte range')
     k = record[1:4].copy()
     energies = record[4:].reshape(header.num_bands, 3)[np.array(bands) - 1, 0].copy()
     return count, k, energies
 
 
-def inspect_selected_wavecar(path, *, bands_1based, lattice, kpoints_1based=None):
-    """Read only headers and energy records, retaining original band/k order and exact spinor counts."""
+def inspect_selected_wavecar(path, *, bands_1based, lattice, kpoints_1based=None,
+                             spinor=True, spin_channel=1):
+    """Read headers and selected-channel energy records, preserving original band/k order."""
     lattice = _validate_lattice(lattice)
     reader, header, original_stat, path = _open_wavecar(path)
     identity = _source_identity(path, original_stat)
     try:
+        components = _spin_components(header, spinor, spin_channel)
         if not np.allclose(header.lattice, lattice, rtol=0, atol=1e-8):
             raise WavecarReadError('WAVECAR lattice disagrees with interface WIN')
         bands = _indices(bands_1based, header.num_bands, 'bands_1based')
         kindices = (tuple(range(1, header.num_kpoints + 1)) if kpoints_1based is None else
                     _indices(kpoints_1based, header.num_kpoints, 'kpoints_1based'))
-        records = [_read_kpoint_metadata(reader, header, ik, bands) for ik in kindices]
+        records = [_read_kpoint_metadata(reader, header, ik, bands, components, spin_channel) for ik in kindices]
         _verify_open_source(reader, path, identity)
         return WavecarMetadata(header, bands, kindices, np.array([row[1] for row in records]),
                                np.array([row[2] for row in records]), tuple(row[0] for row in records),
-                               identity, tuple(reader.ledger))
+                               identity, tuple(reader.ledger), bool(spinor), int(spin_channel))
     finally:
         reader.f.close()
 
@@ -292,7 +320,8 @@ def estimate_wavecar_memory(metadata, *, workers=1, working_complex128_copies=6)
     nb = len(metadata.bands_1based)
     counts = metadata.coefficient_counts
     max_count = max(counts)
-    ng = max_count // 2
+    components = 2 if metadata.spinor else 1
+    ng = max_count // components
     active_workers = min(int(workers), len(counts))
     per_worker = {
         'raw_complex64_bytes': nb * max_count * 8,
@@ -310,7 +339,8 @@ def estimate_wavecar_memory(metadata, *, workers=1, working_complex128_copies=6)
                                                          'interpreter_allowance_bytes')))
     return {'model': 'selected-k-worker-v1', 'is_estimate': True,
             'workers_requested': int(workers), 'workers': active_workers,
-            'stored_kpoints': len(counts), 'selected_bands': nb, 'spinor_components': 2,
+            'stored_kpoints': len(counts), 'selected_bands': nb, 'spinor_components': components,
+            'spin_channel': metadata.spin_channel,
             'max_gvectors': ng, 'coefficient_count_includes_spinor': True,
             'selected_coefficient_read_bytes': sum(counts) * nb * 8,
             'per_worker': per_worker, 'per_worker_estimated_bytes': int(per_worker_total),
@@ -320,13 +350,15 @@ def estimate_wavecar_memory(metadata, *, workers=1, working_complex128_copies=6)
                            'Excludes parent-process state and filesystem cache. Measure RSS on allocated hardware.'}
 
 
-def read_selected_wavecar(path, *, bands_1based, kpoints_1based, lattice, expected_source_identity=None):
+def read_selected_wavecar(path, *, bands_1based, kpoints_1based, lattice, expected_source_identity=None,
+                          spinor=True, spin_channel=1):
     """Read selected k/band records only; return unnormalized official Kpoints and a read ledger.
 
     lattice contains row vectors in angstroms read by the caller from interface WIN; it must match WAVECAR.
     Explicit kpoints_1based=None selects all stored k points; band indices must always be explicit.
     No POSCAR dependency, degenerate-state rotation, band dropping, G truncation, PAW overlap, or gauge certification.
-    Formats other than RTAG45200, multiple spin channels, and multiple energy records are rejected.
+    Scalar spin channels are selected explicitly using 1-based spin_channel. Spinors require NSPIN=1.
+    Formats other than RTAG45200 and multiple energy records are rejected.
     """
     from irrep.gvectors import calc_gvectors
     from irrep.kpoint import Kpoint
@@ -336,6 +368,7 @@ def read_selected_wavecar(path, *, bands_1based, kpoints_1based, lattice, expect
         verify_wavecar_source(path, expected_source_identity)
     reader, header, original_stat, path = _open_wavecar(path)
     try:
+        components = _spin_components(header, spinor, spin_channel)
         identity = _source_identity(path, original_stat)
         if expected_source_identity is not None and identity != expected_source_identity:
             raise WavecarReadError('WAVECAR source changed since metadata inspection')
@@ -347,23 +380,26 @@ def read_selected_wavecar(path, *, bands_1based, kpoints_1based, lattice, expect
         reciprocal = np.linalg.inv(header.lattice).T * (2 * np.pi)
         kpoints = []
         for kindex in kindices:
-            count, k, energy = _read_kpoint_metadata(reader, header, kindex, bands)
-            ig, e_kg = calc_gvectors(k, reciprocal, cutoff, nplane=count // 2,
-                                     Ecut1=cutoff, spinor=True, verbosity=0)
-            if len(ig) * 2 != count:
-                raise WavecarReadError('Independent G enumeration count disagrees with the complete spinor record')
-            raw = np.empty((len(bands), count // 2, 2), dtype=np.complex64)
+            count, k, energy = _read_kpoint_metadata(reader, header, kindex, bands, components, spin_channel)
+            ig, e_kg = calc_gvectors(k, reciprocal, cutoff, nplane=count // components,
+                                     Ecut1=cutoff, spinor=spinor, verbosity=0)
+            if len(ig) * components != count:
+                raise WavecarReadError('Independent G enumeration count disagrees with the complete coefficient record')
+            raw = np.empty((len(bands), count // components, components), dtype=np.complex64)
             for index, band in enumerate(bands):
-                reader.context = {'kind': 'coefficients', 'kpoint_1based': kindex, 'band_1based': band}
-                coefficients = reader.record_k_band(kindex - 1, band - 1, cnt=count)
-                raw[index] = coefficients.reshape(count // 2, 2, order='F')
+                reader.context = {'kind': 'coefficients', 'kpoint_1based': kindex, 'band_1based': band,
+                                  'spin_channel_1based': int(spin_channel)}
+                stored_index = (spin_channel - 1) * nk + kindex - 1
+                coefficients = reader.record_k_band(stored_index, band - 1, cnt=count)
+                raw[index] = coefficients.reshape(count // components, components, order='F')
             association = repair_vasp_g_association(ig, raw[:, ig[:, 3], :],
-                                                    coefficient_count=count, rtag=reader.iprec)
+                                                    coefficient_count=count, rtag=reader.iprec, spinor=spinor)
             point = Kpoint(ik=kindex - 1, num_bands=len(bands), RecLattice=reciprocal.copy(),
-                           spinor=True, kpt=k, WF=association.coefficients, Energy=energy,
+                           spinor=bool(spinor), kpt=k, WF=association.coefficients, Energy=energy,
                            ig=association.ig, upper=None, normalize=False, eKG=e_kg)
             kpoints.append(point)
         _verify_open_source(reader, path, identity)
-        return SelectedWavecar(header, tuple(kpoints), bands, kindices, tuple(reader.ledger))
+        return SelectedWavecar(header, tuple(kpoints), bands, kindices, tuple(reader.ledger),
+                               spinor=bool(spinor), spin_channel=int(spin_channel))
     finally:
         reader.f.close()

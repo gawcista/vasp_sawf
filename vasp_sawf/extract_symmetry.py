@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract full space-group and TR representations of the target subspace on the WAVECAR host."""
+"""Extract spatial and antiunitary representations of the selected target subspace on the WAVECAR host."""
 import argparse
 import os
 import sys
@@ -9,11 +9,12 @@ from pathlib import Path
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--seed', default=Path('wannier90'), type=Path, help='Common interface file prefix without an extension')
-    parser.add_argument('--wavecar', default=Path('WAVECAR'), type=Path, help='Spinor WAVECAR matching the source interfaces; input symbolic links are supported')
+    parser.add_argument('--wavecar', default=Path('WAVECAR'), type=Path, help='WAVECAR matching the source interfaces; input symbolic links are supported')
     parser.add_argument('--outcar', default=Path('OUTCAR'), type=Path, help='OUTCAR from the same interface calculation')
-    parser.add_argument('--output', default=Path('symmetry'), type=Path, help='New symmetry package output directory; existing paths are never overwritten')
+    parser.add_argument('--output', default=Path('symmetry'), type=Path, help='Symmetry package directory; reuse an existing directory and warn before replacing generated files')
     parser.add_argument('--workers', type=int, default=None, help='Maximum worker processes; automatic from the Slurm CPU allocation, otherwise one')
     parser.add_argument('--memory-gb', type=float, default=None, help='Optional memory budget in GiB; capped by available memory')
+    parser.add_argument('--spin-channel', type=int, choices=(1, 2), default=None, help='For non-SOC ISPIN=2: selected up/down channel; inferred from WIN spin or the standard .1/.2 seed suffix')
     args = parser.parse_args()
     for name in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'NUMBA_NUM_THREADS'):
         os.environ[name] = '1'
@@ -27,7 +28,7 @@ def main():
     from vasp_sawf.symmetry import export_symmetry
     try:
         report = export_symmetry(args.seed, args.wavecar, args.outcar, args.output,
-                                 workers=args.workers, memory_gb=args.memory_gb)
+                                 workers=args.workers, memory_gb=args.memory_gb, spin_channel=args.spin_channel)
     except (ValueError, OSError, RuntimeError) as error:
         print(f'Symmetry extraction failed: {error}', file=sys.stderr)
         return 1

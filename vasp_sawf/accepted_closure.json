@@ -13,5 +13,23 @@
   "observed_relative": 2.589629272055618e-06,
   "accepted_max_relative": 2.59e-06,
   "boundary_basis": "The reported value of 2.59e-6 discussed and accepted for these interface files only; this is not a general tolerance",
-  "reviewed_legacy_bloch_sha256": "da002b0436a2593c5b0bc77fa65aff8bf11e3991bc141e5c58fc0b475e80153c"
+  "reviewed_legacy_bloch_sha256": "da002b0436a2593c5b0bc77fa65aff8bf11e3991bc141e5c58fc0b475e80153c",
+  "additional_datasets": [
+    {
+      "id": "srvo3-restart-closure-20261007",
+      "date": "2026-10-07",
+      "approved_by": "The user explicitly accepted the measured closure for the SrVO3 ALGO=0 restart dataset and authorized continuing its numerical validation",
+      "scope": "The single-particle SAWF and band model for the six-band SrVO3 ALGO=0 restart subspace bound to these four interface hashes; all other matrix and convergence checks must still pass",
+      "document": "README.md#numerical-scope",
+      "source_hashes": {
+        "win": "f426ca2971c69da60dc24e15227e1520f69ac14de4433f44c6586f56c4a81368",
+        "amn": "69592c97ee9645e0e8c1a2536fd916398918fbb6956e4204a6198caafb7a2e1c",
+        "eig": "5e4c34ca9e91e9676e8162d70ec758cdaecdb93d88516e052de490be1cd27d50",
+        "mmn": "e2c8c5a8baf0f9acae18952bbfc092df2b24d607ddf56b64084e36a1bd6ece13"
+      },
+      "observed_relative": 1.5343413566685595e-06,
+      "accepted_max_relative": 1.534345e-06,
+      "boundary_basis": "The upper rounding boundary of the user-reviewed value 1.53434e-6 for these interfaces only; no general numerical threshold or other matrix gate is changed"
+    }
+  ]
 }

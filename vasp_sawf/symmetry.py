@@ -15,6 +15,7 @@ import resource
 import time
 from .inputs import _win_sections, read_inputs
 from .wavecar import inspect_wavecar
+from .spin import _outcar_spin_context, _spacegroup_from_context
 
 
 # OUTCAR prints reciprocal coordinates with six decimals; this is not a physics gate.
@@ -311,12 +312,12 @@ def group_residuals(d,kmap,time_reversals,product_table,spinor_factors,
 _GATE = 1e-6  # WB1.7.0 Symmetrizer_Uirr default; this adapter must not relax it.
 
 
-def _closed_spinor_dimension(amn):
+def _closed_spinor_dimension(amn, *, spinor=True):
     shape = np.shape(amn)
     if len(shape) != 3 or shape[0] < 1 or shape[1] != shape[2]:
         raise ValueError('Only complete subspaces with equal Bloch band and Wannier counts are currently supported')
-    if shape[1] < 1 or shape[1] % 2:
-        raise ValueError('The dimension of an SOC/TR-closed subspace must be a positive even integer')
+    if shape[1] < 1 or (spinor and shape[1] % 2):
+        raise ValueError('The dimension must be positive and, for an SOC/TR-closed subspace, a positive even integer')
     return shape[1]
 
 
@@ -370,45 +371,28 @@ def _cell_from_win(text, lattice):
     return positions, np.array([indices[name] for name in species]), species
 
 
-def _outcar_spin_context(text, nions):
-    if text.count('Startparameter for this run:') != 1:
-        raise ValueError('OUTCAR effective parameter block is missing or not unique')
-    effective = text.split('Startparameter for this run:', 1)[1]
-    result = {}
-    for key in ('ISTART', 'ISPIN', 'ISYM', 'LNONCOLLINEAR', 'LSORBIT', 'LWAVE'):
-        values = re.findall(rf'^\s*{key}\s*=\s*(\S+)', effective, re.M)
-        if len(values) != 1:
-            raise ValueError(f'OUTCAR effective {key} is missing or not unique')
-        result[key] = values[0] == 'T' if key.startswith('L') else int(values[0])
-    if not result['LSORBIT'] or not result['LNONCOLLINEAR'] or result['ISPIN'] != 1:
-        raise ValueError('Effective SOC parameters must confirm LSORBIT=T, LNONCOLLINEAR=T and ISPIN=1')
-    marker = 'transformation matrix from SAXIS to cartesian coordinates'
-    if text.count(marker) != 1:
-        raise ValueError('OUTCAR does not provide a unique SAXIS-to-Cartesian transform')
-    rows = text.split(marker, 1)[1].splitlines()[2:5]
-    axes = np.array([[float(row.split()[i]) for i in (0, 2, 4)] for row in rows])
-    if axes.shape != (3, 3) or not np.array_equal(axes, np.eye(3)):
-        raise ValueError('Only spinor coordinates with SAXIS aligned to Cartesian axes have been validated')
-    moments = re.findall(r'^\s*MAGMOM\s*=\s*(.+)$', text, re.M)
-    if len(moments) != 1:
-        raise ValueError('OUTCAR input MAGMOM record is missing or not unique')
-    expanded = []
-    for token in moments[0].split('!')[0].split('#')[0].split():
-        count, value = token.split('*') if '*' in token else ('1', token)
-        expanded.extend([float(value)] * int(count))
-    if len(expanded) != 3 * nions or any(v != 0 for v in expanded):
-        raise ValueError('A nonmagnetic candidate with explicitly zero initial magnetic moments is currently required')
-    magnetization = re.findall(r'number of electron[^\n]*magnetization\s+([^\n]+)', text)
-    if not magnetization:
-        raise ValueError('OUTCAR is missing the final global magnetization')
-    final_moment = np.array([float(v) for v in magnetization[-1].split()])
-    if (final_moment.shape != (3,) or not np.isfinite(final_moment).all()
-            or np.max(abs(final_moment)) > 5.1e-8):
-        raise ValueError('Final global magnetic moment is nonzero at OUTCAR print precision')
-    result.update(saxis_to_cartesian=axes.tolist(), input_magnetic_moments_zero=True,
-                  final_global_magnetization=final_moment.tolist(),
-                  time_reversal_basis='Zero MAGMOM and output moments only identify a candidate; independent wavefunction and PAW MMN antiunitary checks are required')
-    return result
+def _spin_spec(context, seed, spin_channel, wavecar_channels, *, win_spin=None):
+    spinor, ispin = context['spinor'], context['source_ispin']
+    if wavecar_channels != ispin:
+        raise ValueError('Effective spin mode disagrees with the WAVECAR spin-channel count')
+    suffix = re.search(r'\.([12])$', Path(seed).name) if ispin == 2 else None
+    inferred = int(suffix[1]) if suffix else None
+    declared = None
+    if ispin == 2 and win_spin is not None:
+        declared = {'up': 1, 'down': 2}.get(win_spin.lower())
+        if declared is None or (inferred is not None and declared != inferred):
+            raise ValueError('WIN spin channel disagrees with the standard seed suffix or has an invalid value')
+    if spin_channel is None:
+        spin_channel = (inferred or declared) if ispin == 2 else 1
+    if (isinstance(spin_channel, (bool, np.bool_)) or not isinstance(spin_channel, (int, np.integer))
+            or spin_channel not in (1, 2) or spin_channel > ispin
+            or (inferred is not None and spin_channel != inferred)
+            or (declared is not None and spin_channel != declared)):
+        raise ValueError('Select the matching spin channel: use seed wannier90.1/.2 or --spin-channel 1/2 for renamed interfaces')
+    return dict(spinor=spinor, source_ispin=ispin, spin_channel=int(spin_channel),
+                antiunitary_kind=('physical_time_reversal' if spinor else
+                                  'channel_complex_conjugation' if ispin == 2 else 'orbital_complex_conjugation'),
+                time_reversal_square=-1 if spinor else 1)
 
 
 def _independent_transform(point, operation):
@@ -428,11 +412,14 @@ def _independent_transform(point, operation):
     if len(set(map(tuple, target_g))) != len(g):
         raise ValueError('Little-group G mapping is not a complete bijection')
     coefficients = point.WF.conj() if operation.time_reversal else point.WF
-    spin = operation.spinor_rotation
-    if operation.time_reversal:
-        spin = np.array([[0, 1], [-1, 0]]) @ spin.conj()
     phase = np.exp(-2j * np.pi * ((g + point.k) @ operation.translation))
-    transformed = np.einsum('ts,mgs->mgt', spin, coefficients[:, order])
+    if getattr(point, 'spinor', True):
+        spin = operation.spinor_rotation
+        if operation.time_reversal:
+            spin = np.array([[0, 1], [-1, 0]]) @ spin.conj()
+        transformed = np.einsum('ts,mgs->mgt', spin, coefficients[:, order])
+    else:
+        transformed = coefficients[:, order].copy()
     transformed *= phase[None, :, None]
     return transformed
 
@@ -453,9 +440,10 @@ def _check_coefficient_closure(report, value):
     """Apply the recorded dataset-specific decision; other sources retain the original numerical reference."""
     if not np.isfinite(value) or value < 0:
         raise ValueError('Coefficient closure residual must be finite and nonnegative')
-    decision = json.loads(Path(__file__).with_name('accepted_closure.json').read_text())
-    accepted = (report.get('source_hashes') == decision['source_hashes']
-                and value <= decision['accepted_max_relative'])
+    registry = json.loads(Path(__file__).with_name('accepted_closure.json').read_text())
+    decision = next((candidate for candidate in [registry, *registry.get('additional_datasets', [])]
+                     if report.get('source_hashes') == candidate['source_hashes']
+                     and value <= candidate['accepted_max_relative']), None)
     report['residuals']['ibz_coefficient_closure_relative_max'] = float(value)
     report['coefficient_closure'] = dict(
         metric='relative_Frobenius_coefficient_reconstruction', raw_value=float(value),
@@ -463,7 +451,7 @@ def _check_coefficient_closure(report, value):
         reference_status='within_reference' if value <= _GATE else 'above_reference',
         reference_basis='The original 1e-6 is only a numerical reference; see README.md#numerical-scope for dataset-specific physical acceptance')
     report['physical_acceptance_status'] = 'not_assessed'
-    if accepted:
+    if decision is not None:
         report['physical_acceptance_status'] = 'accepted_for_single_particle_model'
         report['coefficient_closure'].update(acceptance_id=decision['id'],
             acceptance_document=decision['document'], acceptance_scope=decision['scope'],
@@ -511,22 +499,43 @@ def _spacegroup_arrays(spacegroup):
     return arrays
 
 
-def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_gb=None):
+def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_gb=None, spin_channel=None):
     """Export Bloch representations and apply approved coefficient-closure decisions without bypassing other checks."""
     started = time.perf_counter()
     seed, wavecar, outcar = (Path(p).resolve() for p in (seed, wavecar, outcar))
     output = Path(output_dir).resolve()
     protected = {seed, wavecar, outcar}
     protected.update(Path(f'{seed}.{suffix}').resolve() for suffix in ('win', 'amn', 'eig', 'mmn'))
-    if (output.exists() or Path(output_dir).is_symlink()
+    if ((output.exists() and not output.is_dir()) or Path(output_dir).is_symlink()
             or any(output.is_relative_to(path) or path.is_relative_to(output) for path in protected)):
-        raise ValueError('Output must be a new directory separate from input file paths; existing paths and symlinks are forbidden')
-    output.mkdir(parents=True, exist_ok=False)
+        raise ValueError('Output must be a real directory separate from input file paths; output symlinks are forbidden')
+    generated = [output / name for name in ('bloch.npz', 'report.json')]
+    existing = []
+    for target in generated:
+        if target.is_symlink() or (target.exists() and not target.is_file()):
+            raise ValueError(f'Output target {target.name} must be a regular file, not a symlink or directory')
+        resolved = target.resolve()
+        if (any(resolved.is_relative_to(path) or path.is_relative_to(resolved) for path in protected)
+                or (target.exists() and any(path.exists() and target.samefile(path) for path in protected))):
+            raise ValueError(f'Output target {target.name} overlaps a protected input file')
+        if target.exists():
+            existing.append(target)
+    output.mkdir(parents=True, exist_ok=True)
     report = dict(schema='sawf-bridge-bloch-v1', status='not_ready', sawf_ready=False,
                   gauge_status='unproven', residuals={}, numerical_gate=_GATE,
                   numerical_checks_passed=False,
                   gate_source='WannierBerri1.7.0 Symmetrizer_Uirr accuracy_threshold default')
     residuals = report['residuals']
+    if existing:
+        import sys
+        print('Warning: overwriting existing symmetry files: ' + ', '.join(path.name for path in existing),
+              file=sys.stderr, flush=True)
+    # Invalidate the old pair before reading inputs, including interrupted reruns.
+    if generated[1] in existing:
+        generated[1].unlink()
+    generated[1].write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
+    if generated[0] in existing:
+        generated[0].unlink()
     try:
         from irrep.spacegroup import SpaceGroup
         import os
@@ -545,7 +554,6 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
         report['header_preflight_read_bytes'] = 128
         bundle = read_inputs(seed, source_nb=header.num_bands)
         report['source_hashes'] = bundle.hashes
-        nb = _closed_spinor_dimension(bundle.amn)
         report.update(source_num_bands=header.num_bands, shape_nk_nb_nw=list(bundle.amn.shape),
                       mesh=bundle.mesh.tolist())
         win = Path(f'{seed}.win').read_text()
@@ -554,14 +562,22 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
         outcar_text = outcar_bytes.decode()
         report['outcar'] = dict(path=str(outcar), sha256=hashlib.sha256(outcar_bytes).hexdigest(),
                                 spin_context=_outcar_spin_context(outcar_text, len(positions)))
+        context = report['outcar']['spin_context']
+        scalars, _ = _win_sections(win)
+        spin = _spin_spec(context, seed, spin_channel, header.spin_channels, win_spin=scalars.get('spin'))
+        report['spin'] = spin
+        nb = _closed_spinor_dimension(bundle.amn, spinor=spin['spinor'])
+        if 'spinors' in scalars:
+            flag = scalars['spinors'].strip('.').lower()
+            if flag not in ('true', 'false', 't', 'f') or (flag in ('true', 't')) != spin['spinor']:
+                raise ValueError('WIN spinors disagrees with the effective OUTCAR spin mode')
         table = parse_outcar_kpoint_map(outcar_text)
         interface_to_outcar, shifts = table.match_interface(bundle.kpoints)
         if np.any(shifts):
             raise ValueError('Wavefunction phases for differing interface and OUTCAR folding have not been validated for this calculation')
         if len(table.ibz_kpoints) != header.num_kpoints:
             raise ValueError('OUTCAR source and WAVECAR disagree on the number of stored IBZ points')
-        sg = SpaceGroup.from_cell(cell=(bundle.lattice, positions, typat), spinor=True,
-                                  magmom=True, include_TR=True, verbosity=0)
+        sg = _spacegroup_from_context(bundle, positions, typat, context)
         operations = sg.symmetries
         pure_t = _validate_grey_group(sg)
         report['symmetry_operations'] = dict(total=len(operations),
@@ -570,7 +586,7 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
         anti = np.array([op.time_reversal for op in operations], dtype=bool)
         phases = mmn_translation_phases(bundle, sg)
         metadata = inspect_selected_wavecar(wavecar, bands_1based=bundle.bands_vasp_1based,
-                                            lattice=bundle.lattice)
+                                            lattice=bundle.lattice, spinor=spin['spinor'], spin_channel=spin['spin_channel'])
         if (metadata.header.num_bands != header.num_bands or metadata.header.num_kpoints != header.num_kpoints
                 or metadata.header.record_bytes != header.record_bytes):
             raise ValueError('WAVECAR header changed during metadata inspection')
@@ -631,7 +647,8 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
         report['active_stage'] = 'gamma_anchor'
         group_dict = sg.as_dict()
         gamma_result = evaluate_kpoint(wavecar, metadata.bands_1based, bundle.lattice, gamma_ibz+1,
-                                       group_dict, little_indices[gamma_ibz], metadata.source_identity, gamma=True)
+                                       group_dict, little_indices[gamma_ibz], metadata.source_identity,
+                                       spin['spin_channel'], gamma=True)
         record_kpoint_result(report, gamma_result)
         anchors = gamma_result['matrices']
         # Gamma is evaluated first; use its measured high-water mark conservatively.
@@ -660,7 +677,8 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
         stage_started = time.perf_counter()
         report['active_stage'] = 'remaining_ibz_checks'
         tasks = [(wavecar, metadata.bands_1based, bundle.lattice, ik+1, group_dict,
-                  little_indices[ik], metadata.source_identity) for ik in range(len(raw_k)) if ik != gamma_ibz]
+                  little_indices[ik], metadata.source_identity, spin['spin_channel'])
+                 for ik in range(len(raw_k)) if ik != gamma_ibz]
         results = [gamma_result]
         for result in evaluate_kpoints(tasks, workers=plan['workers']):
             results.append(result)
@@ -693,9 +711,11 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
         report['group'] = product
         _check(residuals, 'group_composition_max', product['group_composition_max'])
         t = pure_t
-        _check(residuals, 'time_reversal_squared_plus_identity_max', np.max(abs(d[t, kmap[t]] @ d[t].conj()+np.eye(nb))))
+        square_key = ('time_reversal_squared_plus_identity_max' if spin['spinor'] else
+                      'conjugation_squared_minus_identity_max')
+        _check(residuals, square_key, np.max(abs(d[t, kmap[t]] @ d[t].conj()-spin['time_reversal_square']*np.eye(nb))))
         arrays = dict(d=d, kmap=kmap, kpoints=bundle.kpoints, eig=bundle.eig,
-                      bands_vasp_1based=bundle.bands_vasp_1based, **_spacegroup_arrays(sg))
+                      bands_vasp_1based=bundle.bands_vasp_1based, **spin, **_spacegroup_arrays(sg))
         for suffix, expected in bundle.hashes.items():
             if hashlib.sha256(Path(f'{seed}.{suffix}').read_bytes()).hexdigest() != expected:
                 raise ValueError('Original interface files changed during export')
@@ -711,7 +731,7 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
                       gauge_status='verified_mmn_anchor_transport',
                       full_shape=list(d.shape), output='bloch.npz', source_status='wavecar_interface_numerically_cross_checked',
                       excluded_bands_after_compaction=[], no_polar_projection=True,
-                      limitation='Uses input dimensions; requires a closed square subspace, symmetry-preserving Gamma-centered grid, and Cartesian spinor axes. General Seitz translation phases are included. Real-material regression covers SrVO3 only; the target representation is checked separately')
+                      limitation='Requires a closed square subspace and symmetry-preserving Gamma-centered grid. SOC requires Cartesian spinor axes. Scalar ISPIN=2 validates a selected spin channel and orbital conjugation, not cross-channel magnetic operations or physical spin-flipping TR. General Seitz phases are retained; the target representation is checked separately')
     except Exception as error:
         report['error'] = str(error)
         report['failed_stage'] = report.pop('active_stage', 'input_validation')

@@ -15,10 +15,10 @@ import numpy as np
 
 def _validate_payload(U, kpoints, bands_vasp_1based, source_nb, mesh):
     u, kpoints, bands, mesh = map(np.asarray, (U, kpoints, bands_vasp_1based, mesh))
-    if (u.ndim != 3 or u.shape[0] < 1 or u.shape[1] < 2
-            or u.shape[1] != u.shape[2] or u.shape[1] % 2
+    if (u.ndim != 3 or u.shape[0] < 1 or u.shape[1] < 1
+            or u.shape[1] != u.shape[2]
             or not np.issubdtype(u.dtype, np.number) or not np.isfinite(u).all()):
-        raise ValueError('WANPROJ requires finite full-grid square U with an even spinor dimension')
+        raise ValueError('WANPROJ requires finite full-grid square U with a positive dimension')
     nk, nb, nw = u.shape
     if (isinstance(source_nb, bool) or not isinstance(source_nb, Integral) or source_nb < nb):
         raise ValueError('The original source_nb must be a positive integer covering all selected bands')
@@ -135,7 +135,7 @@ def write_wanproj(path, *, U, kpoints, bands_vasp_1based, source_nb, mesh):
 
 def export_wanproj(model_dir, symmetry_dir, output_dir):
     """Export an already accepted model bound to its symmetry package without wavefunction I/O."""
-    from .localize import _new_output, _read_bound_package
+    from .localize import _new_output, _read_bound_package, _validate_spin_metadata
 
     model_dir, symmetry_dir = [Path(p).resolve() for p in (model_dir, symmetry_dir)]
     summary_bytes = (model_dir / 'summary.json').read_bytes()
@@ -157,6 +157,11 @@ def export_wanproj(model_dir, symmetry_dir, output_dir):
     if model_digest != summary.get('model_sha256'):
         raise ValueError('Model SHA256 does not match its validated summary')
     arrays, symreport = _read_bound_package(symmetry_dir, hashes)
+    spin = _validate_spin_metadata(arrays, symreport)
+    if summary.get('spin', spin) != spin:
+        raise ValueError('Model and bound symmetry package disagree on spin semantics')
+    if spin['source_ispin'] == 2:
+        raise ValueError('A standalone collinear channel cannot supply a complete two-channel VASP WANPROJ')
     if symreport['bloch_sha256'] != summary.get('symmetry_package_sha256'):
         raise ValueError('Bound symmetry package SHA256 disagrees with the model summary')
     source_nb = symreport.get('source_num_bands', symreport.get('wavecar', {}).get('num_bands'))

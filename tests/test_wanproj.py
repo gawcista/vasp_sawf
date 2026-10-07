@@ -237,3 +237,25 @@ def test_ready_localization_exports_final_U_without_changing_model_array_schema(
                                     'spreads_angstrom2', 'lattice', 'R', 'H_R'}
         np.testing.assert_array_equal(parsed['U'], model['U'])
         np.testing.assert_array_equal(parsed['kpoints'], model['kpoints'])
+
+
+def test_standalone_collinear_channel_is_not_exported_as_single_channel_vasp(tmp_path):
+    from vasp_sawf.wanproj import export_wanproj
+
+    model, symmetry, _, summary, symreport = _bound_model(tmp_path)
+    spin = dict(spinor=False, source_ispin=2, spin_channel=2,
+                antiunitary_kind='channel_complex_conjugation', time_reversal_square=1)
+    with np.load(symmetry / 'bloch.npz', allow_pickle=False) as archive:
+        arrays = {key: archive[key] for key in archive.files}
+    arrays.update({key: value for key, value in spin.items() if key != 'time_reversal_square'})
+    arrays['spacegroup_spinor'] = False
+    np.savez(symmetry / 'bloch.npz', **arrays)
+    content = (symmetry / 'bloch.npz').read_bytes()
+    symreport.update(spin=spin, bloch_sha256=hashlib.sha256(content).hexdigest(), bloch_bytes=len(content))
+    summary.update(spin=spin, symmetry_package_sha256=symreport['bloch_sha256'])
+    (symmetry / 'report.json').write_text(json.dumps(symreport))
+    (model / 'summary.json').write_text(json.dumps(summary))
+    output = tmp_path / 'export'
+    with pytest.raises(ValueError, match='standalone collinear'):
+        export_wanproj(model, symmetry, output)
+    assert not output.exists()

@@ -31,7 +31,6 @@ def test_outcar_uses_effective_parameters_and_validates_spin_axes():
     assert report['ISYM'] == 2
     assert report['input_magnetic_moments_zero']
     for text in [_spin_outcar().replace('LSORBIT = T', 'LSORBIT = F'),
-                 _spin_outcar().replace('6*0', '5*0 1'),
                  _spin_outcar().replace('1.0000000 m_x', '0.0000000 m_x')]:
         with pytest.raises(ValueError):
             _outcar_spin_context(text, 2)
@@ -50,20 +49,19 @@ def test_lwave_is_metadata_without_a_wavefunction_provenance_claim(lwave, expect
 @pytest.mark.parametrize('original,replacement', [
     ('LSORBIT = T', 'LSORBIT = F'),
     ('LNONCOLLINEAR = T', 'LNONCOLLINEAR = F'),
-    ('ISPIN = 1', 'ISPIN = 2'),
 ])
-def test_non_soc_or_scalar_spin_context_is_still_rejected(original, replacement):
+def test_inconsistent_soc_flags_are_rejected(original, replacement):
     from vasp_sawf.symmetry import _outcar_spin_context
 
-    with pytest.raises(ValueError, match='Effective SOC parameters'):
+    with pytest.raises(ValueError, match='Supported modes'):
         _outcar_spin_context(_spin_outcar().replace(original, replacement), 2)
 
 
-def test_effective_lwave_metadata_is_still_required():
+def test_effective_lwave_metadata_is_optional():
     from vasp_sawf.symmetry import _outcar_spin_context
 
-    with pytest.raises(ValueError, match='effective LWAVE is missing'):
-        _outcar_spin_context(_spin_outcar().replace(' LWAVE = T\n', ''), 2)
+    report = _outcar_spin_context(_spin_outcar().replace(' LWAVE = T\n', ''), 2)
+    assert report['LWAVE'] is None
 
 
 def test_nonfinite_final_magnetization_cannot_pass_zero_test():
@@ -236,7 +234,7 @@ def test_export_rejects_unsupported_geometry_before_coefficient_io(tmp_path, mon
     assert not (output / 'bloch.npz').exists()
 
 
-def test_export_never_overwrites_existing_outputs_or_input_directory(tmp_path):
+def test_export_never_replaces_output_file_or_input_directory(tmp_path):
     from vasp_sawf.symmetry import export_symmetry
 
     source = tmp_path / 'inputs'
@@ -245,7 +243,7 @@ def test_export_never_overwrites_existing_outputs_or_input_directory(tmp_path):
     output.mkdir()
     marker = output / 'report.json'
     marker.write_text('original')
-    for target in (output, marker, source):
+    for target in (marker, source):
         with pytest.raises(ValueError):
             export_symmetry(source / 'wannier90', source / 'WAVECAR', source / 'OUTCAR', target)
     assert marker.read_text() == 'original'

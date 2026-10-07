@@ -500,7 +500,8 @@ def _spacegroup_arrays(spacegroup):
     return arrays
 
 
-def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_gb=None, spin_channel=None, tol=1e-5):
+def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_gb=None, spin_channel=None,
+                    tol=1e-5, energy_tol=1e-8):
     """Export Bloch representations and apply approved coefficient-closure decisions without bypassing other checks."""
     started = time.perf_counter()
     seed, wavecar, outcar = (Path(p).resolve() for p in (seed, wavecar, outcar))
@@ -548,6 +549,10 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
             raise ValueError('memory-gb must be finite and positive')
         if isinstance(tol, (bool, np.bool_)) or not isinstance(tol, Real) or not np.isfinite(tol) or tol <= 0:
             raise ValueError('Lattice tol must be a finite positive number in angstroms')
+        if (isinstance(energy_tol, (bool, np.bool_)) or not isinstance(energy_tol, Real)
+                or not np.isfinite(energy_tol) or energy_tol <= 0):
+            raise ValueError('energy-tol must be a finite positive number in eV')
+        report['wavecar_interface_energy_tolerance_ev'] = float(energy_tol)
         stage_started = time.perf_counter()
         report['stage_seconds'] = {}
         report['active_stage'] = 'input_and_metadata'
@@ -614,12 +619,18 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
         raw_energies = metadata.energies
         expected_eig = raw_energies[table.source_ibz[interface_to_outcar]]
         serialized = [line.split()[2] for line in Path(f'{seed}.eig').read_text().splitlines() if line.strip()]
-        exponents = {Decimal(token).as_tuple().exponent for token in serialized}
-        if len(exponents) != 1 or next(iter(exponents)) > -8:
-            raise ValueError('EIG print precision is inconsistent or insufficient; refusing to guess a source energy tolerance')
-        eig_tolerance = .5 * 10. ** next(iter(exponents)) + 8 * np.finfo(float).eps * max(1., abs(bundle.eig).max())
+        exponents = {Decimal(token.replace('D', 'E').replace('d', 'e')).as_tuple().exponent for token in serialized}
+        eig_tolerance = .5 * 10. ** max(exponents) + 8 * np.finfo(float).eps * max(1., abs(bundle.eig).max())
         report['eig_serialization_tolerance_ev'] = float(eig_tolerance)
-        _check(residuals, 'wavecar_interface_energy_max_ev', np.max(abs(expected_eig-bundle.eig)), eig_tolerance)
+        difference = expected_eig - bundle.eig
+        ik, ib = np.unravel_index(np.argmax(abs(difference)), difference.shape)
+        report['energy_comparison'] = dict(
+            interface_kpoint_1based=int(ik)+1, wavecar_kpoint_1based=int(table.source_ibz[interface_to_outcar[ik]])+1,
+            compact_band_1based=int(ib)+1, vasp_band_1based=int(bundle.bands_vasp_1based[ib]),
+            wavecar_energy_ev=float(expected_eig[ik, ib]), interface_energy_ev=float(bundle.eig[ik, ib]),
+            difference_ev=float(difference[ik, ib]),
+            scope='Largest absolute difference after band/k mapping; no energy reference shift')
+        _check(residuals, 'wavecar_interface_energy_max_ev', np.max(abs(difference)), energy_tol)
         gamma_rows = np.flatnonzero(np.max(abs(raw_k), axis=1) < 1e-12)
         if len(gamma_rows) != 1:
             raise ValueError('Exactly one stored Gamma anchor is required')

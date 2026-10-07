@@ -16,6 +16,7 @@ def main():
     parser.add_argument('--memory-gb', type=float, default=None, help='Optional memory budget in GiB; capped by available memory')
     parser.add_argument('--spin-channel', type=int, choices=(1, 2), default=None, help='For non-SOC ISPIN=2: selected up/down channel; inferred from WIN spin or the standard .1/.2 seed suffix')
     parser.add_argument('--tol', type=float, default=1e-5, help='Absolute WAVECAR/WIN lattice tolerance in angstroms; does not change any symmetry or localization tolerance')
+    parser.add_argument('--energy-tol', type=float, default=1e-8, help='Absolute WAVECAR/EIG energy tolerance in eV; does not change energy covariance or other symmetry/localization tolerances')
     args = parser.parse_args()
     for name in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'NUMBA_NUM_THREADS'):
         os.environ[name] = '1'
@@ -29,7 +30,8 @@ def main():
     from vasp_sawf.symmetry import export_symmetry
     try:
         report = export_symmetry(args.seed, args.wavecar, args.outcar, args.output,
-                                 workers=args.workers, memory_gb=args.memory_gb, spin_channel=args.spin_channel, tol=args.tol)
+                                 workers=args.workers, memory_gb=args.memory_gb, spin_channel=args.spin_channel,
+                                 tol=args.tol, energy_tol=args.energy_tol)
     except (ValueError, OSError, RuntimeError) as error:
         print(f'Symmetry extraction failed: {error}', file=sys.stderr)
         return 1

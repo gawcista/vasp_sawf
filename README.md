@@ -31,6 +31,8 @@ Selected-band energies, lattice, source k points and the numerical PAW MMN/sewin
 
 VASP 6.6.1 writes WIN lattice components with seven decimal places (`3F14.7`), whereas WAVECAR retains binary double precision. The lattice comparison uses an absolute tolerance of `1e-5` angstrom per component by default, configurable with `--tol=1e-5`; no relative tolerance is applied. This option affects only the WAVECAR/WIN lattice comparison, not any MMN, group, time-reversal, closure or localization check. The original WIN is unchanged, and coefficient/G-vector reads use the validated binary lattice. `report.json` records both cells, their differences and the chosen tolerance. A mismatch exceeding the tolerance still fails and prints these diagnostics.
 
+The selected-band energy comparison uses a separate absolute tolerance of `1e-8` eV, configurable with `--energy-tol=1e-8`. It compares WAVECAR energies with the original EIG after band/k-point mapping, without shifting either energy reference. A restart interface calculation can update energies after reading WAVECAR, so EIG decimal precision is recorded as a serialization diagnostic, not used as the comparison threshold. The report records the chosen energy tolerance, maximum difference and the worst-matching band/k point. This option does not change energy covariance, MMN, group, antiunitary, coefficient-closure or localization checks. Passing it does not establish a shared Bloch gauge. A difference of `5.58e-5` eV still exceeds the default `1e-8` eV threshold.
+
 Run on allocated compute resources on the machine holding WAVECAR:
 
 ```bash

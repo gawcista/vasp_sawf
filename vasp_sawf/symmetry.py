@@ -589,7 +589,12 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
         operations = sg.symmetries
         pure_t = _validate_grey_group(sg)
         report['symmetry_operations'] = dict(total=len(operations),
-                                             antiunitary=sum(bool(op.time_reversal) for op in operations))
+            antiunitary=sum(bool(op.time_reversal) for op in operations),
+            operations=[dict(index_0based=i, rotation=op.rotation.tolist(), translation=op.translation.tolist(),
+                             time_reversal=bool(op.time_reversal),
+                             spinor_rotation_real=op.spinor_rotation.real.tolist(),
+                             spinor_rotation_imag=op.spinor_rotation.imag.tolist())
+                        for i, op in enumerate(operations)])
         kmap, edge_map = build_symmetry_maps(bundle, sg)
         anti = np.array([op.time_reversal for op in operations], dtype=bool)
         phases = mmn_translation_phases(bundle, sg)
@@ -667,6 +672,13 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
                                        spin['spin_channel'], gamma=True)
         record_kpoint_result(report, gamma_result)
         anchors = gamma_result['matrices']
+        report['gamma_anchor'] = dict(
+            wavecar_kpoint_1based=int(gamma_ibz)+1, interface_kpoint_1based=int(gamma)+1,
+            operation_indices_0based=list(map(int, gamma_result['little_indices'])),
+            matrices_real=anchors.real.tolist(), matrices_imag=anchors.imag.tolist(),
+            coefficient_closure_relative_max=float(gamma_result['closure']),
+            independent_lstsq_difference_max=float(gamma_result['gamma_lstsq']),
+            unitarity_max=float(np.max(abs(anchors.swapaxes(-1, -2).conj() @ anchors - np.eye(nb)))))
         # Gamma is evaluated first; use its measured high-water mark conservatively.
         calibrated_worker_bytes = max(estimate['per_worker_estimated_bytes'], gamma_result['peak_rss_kib'] * 1024)
         try:
@@ -678,10 +690,11 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
         report['execution'] = {**plan, 'gamma_process_peak_rss_kib': gamma_result['peak_rss_kib'],
                                'calibration_scope': 'Parent process including Gamma; other k points may have different peaks'}
         report['memory_estimate'] = estimate_wavecar_memory(metadata, workers=plan['workers'])
-        print(f"Gamma checked; continuing with {plan['workers']} worker processes", flush=True)
+        print(f"Gamma evaluated; planned worker processes: {plan['workers']}", flush=True)
         report['stage_seconds']['gamma_anchor'] = time.perf_counter() - stage_started
         stage_started = time.perf_counter()
         report['active_stage'] = 'mmn_transport'
+        (output / 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
         d, transport = transport_sewing(bundle.mmn, bundle.neighbor_indices, kmap, edge_map, anti, anchors, anchor_k=gamma, edge_phases=phases)
         report['transport'] = transport
         _check(residuals, 'mmn_covariance_max', transport['mmn_covariance_max'])

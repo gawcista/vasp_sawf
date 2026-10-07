@@ -69,7 +69,7 @@ def _numbers(line, count, context, *, integers=False):
 def _win_sections(text):
     scalars, blocks = {}, {}
     current = None
-    relevant = {"num_bands", "num_wann", "mp_grid", "exclude_bands"}
+    relevant = {"num_bands", "num_wann", "mp_grid", "exclude_bands", "spin", "spinors"}
     for original in text.splitlines():
         line = re.split(r"[!#]", original, maxsplit=1)[0].strip()
         if not line:

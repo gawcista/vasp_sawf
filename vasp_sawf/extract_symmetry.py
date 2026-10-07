@@ -9,7 +9,7 @@ from pathlib import Path
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--seed', default=Path('wannier90'), type=Path, help='Common interface file prefix without an extension')
-    parser.add_argument('--wavecar', default=Path('WAVECAR'), type=Path, help='WAVECAR saved at the end of the same interface calculation')
+    parser.add_argument('--wavecar', default=Path('WAVECAR'), type=Path, help='Spinor WAVECAR matching the source interfaces; input symbolic links are supported')
     parser.add_argument('--outcar', default=Path('OUTCAR'), type=Path, help='OUTCAR from the same interface calculation')
     parser.add_argument('--output', default=Path('symmetry'), type=Path, help='New symmetry package output directory; existing paths are never overwritten')
     parser.add_argument('--workers', type=int, default=None, help='Maximum worker processes; automatic from the Slurm CPU allocation, otherwise one')

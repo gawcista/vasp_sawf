@@ -25,7 +25,7 @@ For development, use `python -m pip install -e ".[test]"`. `requirements.lock` i
 
 ## Inputs and extraction
 
-The original `.win/.amn/.mmn/.eig` files share a seed prefix. WIN must contain the full lattice, atomic structure, and complete k-point mesh. Provide WAVECAR saved at the end of the same interface calculation and its OUTCAR, including reciprocal folding tables and explicit zero MAGMOM. Matching band energies alone does not identify a shared Bloch gauge. An inherited SCF WAVECAR requires evidence that it matches the generated interfaces; an `ALGO=None` run alone does not establish that relationship.
+The original `.win/.amn/.mmn/.eig` files share a seed prefix. WIN must contain the full lattice, atomic structure, and complete k-point mesh. Provide the matching spinor WAVECAR and the interface calculation's OUTCAR, including reciprocal folding tables and explicit zero MAGMOM. Inherited WAVECAR inputs and symbolic links are supported: `LWAVE` is recorded as output metadata, and `LWAVE=F` does not reject extraction. Selected-band energies, lattice, source k points and the numerical PAW MMN/sewing checks must still match. Matching energies or an `ALGO=None` run alone does not identify a shared Bloch gauge; the reported MMN anchor-transport status describes numerical consistency, not an independent cross-run gauge certificate.
 
 Run on allocated compute resources on the machine holding WAVECAR:
 

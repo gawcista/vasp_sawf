@@ -37,6 +37,35 @@ def test_outcar_uses_effective_parameters_and_validates_spin_axes():
             _outcar_spin_context(text, 2)
 
 
+@pytest.mark.parametrize('lwave,expected', [('T', True), ('F', False)])
+def test_lwave_is_metadata_without_a_wavefunction_provenance_claim(lwave, expected):
+    from vasp_sawf.symmetry import _outcar_spin_context
+
+    report = _outcar_spin_context(_spin_outcar().replace('LWAVE = T', f'LWAVE = {lwave}'), 2)
+    assert report['LWAVE'] is expected
+    assert 'source_status' not in report
+    assert 'gauge_status' not in report
+
+
+@pytest.mark.parametrize('original,replacement', [
+    ('LSORBIT = T', 'LSORBIT = F'),
+    ('LNONCOLLINEAR = T', 'LNONCOLLINEAR = F'),
+    ('ISPIN = 1', 'ISPIN = 2'),
+])
+def test_non_soc_or_scalar_spin_context_is_still_rejected(original, replacement):
+    from vasp_sawf.symmetry import _outcar_spin_context
+
+    with pytest.raises(ValueError, match='Effective SOC parameters'):
+        _outcar_spin_context(_spin_outcar().replace(original, replacement), 2)
+
+
+def test_effective_lwave_metadata_is_still_required():
+    from vasp_sawf.symmetry import _outcar_spin_context
+
+    with pytest.raises(ValueError, match='effective LWAVE is missing'):
+        _outcar_spin_context(_spin_outcar().replace(' LWAVE = T\n', ''), 2)
+
+
 def test_nonfinite_final_magnetization_cannot_pass_zero_test():
     from vasp_sawf.symmetry import _outcar_spin_context
 

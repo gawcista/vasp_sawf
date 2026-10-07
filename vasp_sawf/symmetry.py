@@ -260,7 +260,7 @@ def make_symmetrizer(bundle, spacegroup, d):
     irr=select_irreducible(bundle.kpoints,spacegroup)
     mapping,k2irr,from_sym=get_mapping_irr(bundle.kpoints,irr,spacegroup)
     dic={'D_wann_block_indices':np.zeros((0,2),int),'_NB':nb,'_NK':nk,
-         'num_wann':0,'comment':'Same-run WAVECAR anchors and native VASP PAW MMN; complete raw selected-band representation',
+         'num_wann':0,'comment':'WAVECAR anchors and native VASP PAW MMN; complete raw selected-band representation',
          'kptirr':irr,'kptirr2kpt':mapping,'kpt2kptirr':k2irr,
          'kpt2kptirr_sym':from_sym,'kpt_from_kptirr_isym':from_sym,
          'NKirr':len(irr),'Nsym':spacegroup.size,
@@ -380,8 +380,8 @@ def _outcar_spin_context(text, nions):
         if len(values) != 1:
             raise ValueError(f'OUTCAR effective {key} is missing or not unique')
         result[key] = values[0] == 'T' if key.startswith('L') else int(values[0])
-    if not result['LSORBIT'] or not result['LNONCOLLINEAR'] or not result['LWAVE'] or result['ISPIN'] != 1:
-        raise ValueError('Effective SOC parameters must confirm that the final spinor WAVECAR was saved in the same run')
+    if not result['LSORBIT'] or not result['LNONCOLLINEAR'] or result['ISPIN'] != 1:
+        raise ValueError('Effective SOC parameters must confirm LSORBIT=T, LNONCOLLINEAR=T and ISPIN=1')
     marker = 'transformation matrix from SAXIS to cartesian coordinates'
     if text.count(marker) != 1:
         raise ValueError('OUTCAR does not provide a unique SAXIS-to-Cartesian transform')
@@ -709,7 +709,7 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
                       numerical_checks_passed=True,
                       numerical_checks_scope='All provenance/representation/PAW MMN numerical checks; coefficient F-closure reference results are reported separately',
                       gauge_status='verified_mmn_anchor_transport',
-                      full_shape=list(d.shape), output='bloch.npz', source_status='same_run_numerically_cross_checked',
+                      full_shape=list(d.shape), output='bloch.npz', source_status='wavecar_interface_numerically_cross_checked',
                       excluded_bands_after_compaction=[], no_polar_projection=True,
                       limitation='Uses input dimensions; requires a closed square subspace, symmetry-preserving Gamma-centered grid, and Cartesian spinor axes. General Seitz translation phases are included. Real-material regression covers SrVO3 only; the target representation is checked separately')
     except Exception as error:

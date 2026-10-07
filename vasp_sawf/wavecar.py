@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from importlib.metadata import version
 import numpy as np
-from numbers import Integral
+from numbers import Integral, Real
 import os
 from pathlib import Path
 
@@ -165,6 +165,37 @@ def _validate_lattice(lattice):
     return lattice
 
 
+def check_lattice_match(wavecar_lattice, lattice, *, tol=1e-5):
+    """Compare row-vector cells with an explicit absolute tolerance in angstroms."""
+    if isinstance(tol, (bool, np.bool_)) or not isinstance(tol, Real) or not np.isfinite(tol) or tol <= 0:
+        raise WavecarReadError('Lattice tol must be a finite positive number in angstroms')
+    actual, expected = map(_validate_lattice, (wavecar_lattice, lattice))
+    tolerance = np.full((3, 3), float(tol))
+    tolerance += 8 * np.finfo(float).eps * np.maximum(1., np.maximum(abs(actual), abs(expected)))
+    difference = actual - expected
+    absolute = abs(difference)
+    matches = bool(np.all(absolute <= tolerance))
+    index = np.unravel_index(np.argmax(absolute - tolerance), (3, 3))
+    record = dict(matches=matches, wavecar_lattice_angstrom=actual.tolist(),
+                  win_lattice_angstrom=expected.tolist(), difference_angstrom=difference.tolist(),
+                  tolerance_angstrom=tolerance.tolist(), max_abs_difference_angstrom=float(absolute.max()),
+                  absolute_tolerance_angstrom=float(tol),
+                  worst_component_1based=[int(i)+1 for i in index],
+                  basis='Absolute component-wise lattice tolerance in angstroms plus binary roundoff; no relative tolerance')
+    if not matches:
+        error = WavecarReadError(
+            'WAVECAR lattice disagrees with interface WIN: '
+            f'max absolute difference {absolute.max():.12g} angstrom; '
+            f'component {tuple(record["worst_component_1based"])} difference {absolute[index]:.12g}, '
+            f'allowed {tolerance[index]:.12g}. Lattice vectors are rows in angstroms.\n'
+            f'WAVECAR: {np.array2string(actual, precision=16)}\n'
+            f'WIN: {np.array2string(expected, precision=16)}\n'
+            f'WAVECAR - WIN: {np.array2string(difference, precision=12)}')
+        error.lattice_comparison = record
+        raise error
+    return record
+
+
 def _positive_integer(value, name):
     if not np.isfinite(value) or value < 1 or value != int(value):
         raise WavecarReadError(f'{name} must be a positive integer')
@@ -295,8 +326,7 @@ def inspect_selected_wavecar(path, *, bands_1based, lattice, kpoints_1based=None
     identity = _source_identity(path, original_stat)
     try:
         components = _spin_components(header, spinor, spin_channel)
-        if not np.allclose(header.lattice, lattice, rtol=0, atol=1e-8):
-            raise WavecarReadError('WAVECAR lattice disagrees with interface WIN')
+        check_lattice_match(header.lattice, lattice)
         bands = _indices(bands_1based, header.num_bands, 'bands_1based')
         kindices = (tuple(range(1, header.num_kpoints + 1)) if kpoints_1based is None else
                     _indices(kpoints_1based, header.num_kpoints, 'kpoints_1based'))
@@ -372,8 +402,7 @@ def read_selected_wavecar(path, *, bands_1based, kpoints_1based, lattice, expect
         identity = _source_identity(path, original_stat)
         if expected_source_identity is not None and identity != expected_source_identity:
             raise WavecarReadError('WAVECAR source changed since metadata inspection')
-        if not np.allclose(header.lattice, lattice, rtol=0, atol=1e-8):
-            raise WavecarReadError('WAVECAR lattice disagrees with interface WIN')
+        check_lattice_match(header.lattice, lattice)
         nb, nk, cutoff = header.num_bands, header.num_kpoints, header.cutoff_ev
         bands = _indices(bands_1based, nb, 'bands_1based')
         kindices = tuple(range(1, nk + 1)) if kpoints_1based is None else _indices(kpoints_1based, nk, 'kpoints_1based')

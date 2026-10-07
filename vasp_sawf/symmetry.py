@@ -7,6 +7,7 @@ from collections import deque
 from importlib.metadata import version
 from dataclasses import asdict
 from decimal import Decimal
+from numbers import Real
 import hashlib
 import json
 from pathlib import Path
@@ -499,7 +500,7 @@ def _spacegroup_arrays(spacegroup):
     return arrays
 
 
-def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_gb=None, spin_channel=None):
+def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_gb=None, spin_channel=None, tol=1e-5):
     """Export Bloch representations and apply approved coefficient-closure decisions without bypassing other checks."""
     started = time.perf_counter()
     seed, wavecar, outcar = (Path(p).resolve() for p in (seed, wavecar, outcar))
@@ -539,12 +540,14 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
     try:
         from irrep.spacegroup import SpaceGroup
         import os
-        from .wavecar import inspect_selected_wavecar, estimate_wavecar_memory, verify_wavecar_source
+        from .wavecar import inspect_selected_wavecar, estimate_wavecar_memory, verify_wavecar_source, check_lattice_match
         from .extraction import available_memory_bytes, worker_plan, evaluate_kpoint, evaluate_kpoints, record_kpoint_result
         if workers is not None and (isinstance(workers, bool) or not isinstance(workers, int) or workers < 1):
             raise ValueError('workers must be a positive integer')
         if memory_gb is not None and (not np.isfinite(memory_gb) or memory_gb <= 0):
             raise ValueError('memory-gb must be finite and positive')
+        if isinstance(tol, (bool, np.bool_)) or not isinstance(tol, Real) or not np.isfinite(tol) or tol <= 0:
+            raise ValueError('Lattice tol must be a finite positive number in angstroms')
         stage_started = time.perf_counter()
         report['stage_seconds'] = {}
         report['active_stage'] = 'input_and_metadata'
@@ -585,10 +588,12 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
         kmap, edge_map = build_symmetry_maps(bundle, sg)
         anti = np.array([op.time_reversal for op in operations], dtype=bool)
         phases = mmn_translation_phases(bundle, sg)
+        report['lattice_comparison'] = check_lattice_match(header.lattice, bundle.lattice, tol=tol)
         metadata = inspect_selected_wavecar(wavecar, bands_1based=bundle.bands_vasp_1based,
-                                            lattice=bundle.lattice, spinor=spin['spinor'], spin_channel=spin['spin_channel'])
+                                            lattice=header.lattice, spinor=spin['spinor'], spin_channel=spin['spin_channel'])
         if (metadata.header.num_bands != header.num_bands or metadata.header.num_kpoints != header.num_kpoints
-                or metadata.header.record_bytes != header.record_bytes):
+                or metadata.header.record_bytes != header.record_bytes
+                or not np.array_equal(metadata.header.lattice, header.lattice)):
             raise ValueError('WAVECAR header changed during metadata inspection')
         report['wavecar'] = asdict(metadata.header)
         report['wavecar']['lattice'] = metadata.header.lattice.tolist()
@@ -646,7 +651,7 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
         stage_started = time.perf_counter()
         report['active_stage'] = 'gamma_anchor'
         group_dict = sg.as_dict()
-        gamma_result = evaluate_kpoint(wavecar, metadata.bands_1based, bundle.lattice, gamma_ibz+1,
+        gamma_result = evaluate_kpoint(wavecar, metadata.bands_1based, metadata.header.lattice, gamma_ibz+1,
                                        group_dict, little_indices[gamma_ibz], metadata.source_identity,
                                        spin['spin_channel'], gamma=True)
         record_kpoint_result(report, gamma_result)
@@ -676,7 +681,7 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
         report['stage_seconds']['mmn_transport'] = time.perf_counter() - stage_started
         stage_started = time.perf_counter()
         report['active_stage'] = 'remaining_ibz_checks'
-        tasks = [(wavecar, metadata.bands_1based, bundle.lattice, ik+1, group_dict,
+        tasks = [(wavecar, metadata.bands_1based, metadata.header.lattice, ik+1, group_dict,
                   little_indices[ik], metadata.source_identity, spin['spin_channel'])
                  for ik in range(len(raw_k)) if ik != gamma_ibz]
         results = [gamma_result]
@@ -733,6 +738,8 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
                       excluded_bands_after_compaction=[], no_polar_projection=True,
                       limitation='Requires a closed square subspace and symmetry-preserving Gamma-centered grid. SOC requires Cartesian spinor axes. Scalar ISPIN=2 validates a selected spin channel and orbital conjugation, not cross-channel magnetic operations or physical spin-flipping TR. General Seitz phases are retained; the target representation is checked separately')
     except Exception as error:
+        if hasattr(error, 'lattice_comparison'):
+            report['lattice_comparison'] = error.lattice_comparison
         report['error'] = str(error)
         report['failed_stage'] = report.pop('active_stage', 'input_validation')
         report['failed_stage_seconds'] = time.perf_counter() - locals().get('stage_started', started)

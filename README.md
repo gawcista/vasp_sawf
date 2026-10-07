@@ -29,6 +29,8 @@ The original `.win/.amn/.mmn/.eig` files share a seed prefix. WIN must contain t
 
 Selected-band energies, lattice, source k points and the numerical PAW MMN/sewing checks must still match. Matching energies or an `ALGO=None` run alone does not identify a shared Bloch gauge; the reported MMN anchor-transport status describes numerical consistency, not an independent cross-run gauge certificate. No repeated manual source approval is required.
 
+VASP 6.6.1 writes WIN lattice components with seven decimal places (`3F14.7`), whereas WAVECAR retains binary double precision. The lattice comparison uses an absolute tolerance of `1e-5` angstrom per component by default, configurable with `--tol=1e-5`; no relative tolerance is applied. This option affects only the WAVECAR/WIN lattice comparison, not any MMN, group, time-reversal, closure or localization check. The original WIN is unchanged, and coefficient/G-vector reads use the validated binary lattice. `report.json` records both cells, their differences and the chosen tolerance. A mismatch exceeding the tolerance still fails and prints these diagnostics.
+
 Run on allocated compute resources on the machine holding WAVECAR:
 
 ```bash

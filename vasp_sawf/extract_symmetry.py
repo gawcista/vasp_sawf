@@ -17,6 +17,8 @@ def main():
     parser.add_argument('--spin-channel', type=int, choices=(1, 2), default=None, help='For non-SOC ISPIN=2: selected up/down channel; inferred from WIN spin or the standard .1/.2 seed suffix')
     parser.add_argument('--tol', type=float, default=1e-5, help='Absolute WAVECAR/WIN lattice tolerance in angstroms; does not change any symmetry or localization tolerance')
     parser.add_argument('--energy-tol', type=float, default=1e-8, help='Absolute WAVECAR/EIG energy tolerance in eV; does not change energy covariance or other symmetry/localization tolerances')
+    parser.add_argument('--diagnose-kpoints', nargs='+', type=int, default=None, metavar='K',
+                        help='Diagnose selected 1-based stored WAVECAR k points, adding Gamma automatically; write diagnostic.json only, without a SAWF-ready export')
     args = parser.parse_args()
     for name in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'NUMBA_NUM_THREADS'):
         os.environ[name] = '1'
@@ -31,11 +33,16 @@ def main():
     try:
         report = export_symmetry(args.seed, args.wavecar, args.outcar, args.output,
                                  workers=args.workers, memory_gb=args.memory_gb, spin_channel=args.spin_channel,
-                                 tol=args.tol, energy_tol=args.energy_tol)
+                                 tol=args.tol, energy_tol=args.energy_tol, diagnose_kpoints=args.diagnose_kpoints)
     except (ValueError, OSError, RuntimeError) as error:
         print(f'Symmetry extraction failed: {error}', file=sys.stderr)
         return 1
-    print(f"Symmetry package: {args.output.resolve()}; status: {report['status']}")
+    destination = args.output.resolve()
+    label = 'Symmetry package'
+    if args.diagnose_kpoints is not None:
+        destination = destination / 'diagnostic.json'
+        label = 'Diagnostic report'
+    print(f"{label}: {destination}; status: {report['status']}")
     return 0
 
 

@@ -48,7 +48,17 @@ Extraction reads selected-band records with complete G vectors and all component
 
 Before MMN transport, `report.json` records the raw Gamma symmetry matrices (real and imaginary parts), operation ordering and full Seitz/spin rotations, coefficient closure, independent least-squares difference and anchor unitarity. These diagnostics remain available if transport fails and allow offline replay with the original small interface files, without reading WAVECAR again. `Gamma evaluated` means the anchor calculation returned; it does not mean all symmetry checks passed. A failed extraction remains `not_ready` and cannot produce a usable Bloch package. An order-one MMN covariance residual requires diagnosis of the anchor basis, subspace and symmetry conventions; increasing lattice or energy tolerances does not resolve it.
 
-The outputs `bloch.npz` and `report.json` form one bound bundle. Download both along with the unchanged original WIN/AMN/MMN/EIG for localization.
+The normal extraction outputs `bloch.npz` and `report.json` form one bound bundle. Download both along with the unchanged original WIN/AMN/MMN/EIG for localization.
+
+For focused diagnosis of failed covariance checks, use the same seed, WAVECAR and OUTCAR. For example, run these selected tSnS points within an existing Slurm allocation:
+
+```bash
+srun sawf-extract --diagnose-kpoints 1 4 20 21 23 24
+```
+
+These are **one-based stored WAVECAR k-point indices**, not full-mesh WIN indices. Supply distinct indices. The program reads each requested point once and automatically includes Gamma if absent; it retains every selected band and G component, and leaves the complete MMN mesh unchanged. Other systems need their own stored-point indices. The only result written is `symmetry/diagnostic.json` (`--output` changes its directory); existing `report.json` and `bloch.npz` remain untouched. This mode never creates a SAWF-ready package or relaxes normal extraction checks.
+
+The diagnostic records raw local coefficient closure, unitarity, energy intertwining and full Seitz group relations. Comparisons with MMN-transported matrices and direct native-MMN covariance assume that source and interface Bloch gauges agree; they cannot independently prove that assumption. Coefficient residuals use the stored pseudo-wavefunction coefficients and do not replace PAW overlaps or certify PAW orthogonality. No coefficient approximation or projection is applied.
 
 Independent stored k points can be processed in parallel. `--workers N` and `--memory-gb GIB` set upper limits; CPU allocation, coefficient counts, and available memory can reduce concurrency. Under Slurm request one task with multiple CPUs. For an exclusive ADA large-memory node, save this script in the interface directory and submit it with the installed environment active:
 

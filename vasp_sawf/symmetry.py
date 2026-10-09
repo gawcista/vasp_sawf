@@ -7,7 +7,7 @@ from collections import deque
 from importlib.metadata import version
 from dataclasses import asdict
 from decimal import Decimal
-from numbers import Real
+from numbers import Integral, Real
 import hashlib
 import json
 from pathlib import Path
@@ -500,10 +500,94 @@ def _spacegroup_arrays(spacegroup):
     return arrays
 
 
+def _diagnose_selected(report, report_path, bundle, sg, metadata, wavecar, spin, selected,
+                       ibz_interface, little_indices, gamma_result, kmap, edge_map, anti, phases, *, workers):
+    from .diagnostics import mmn_invariant_report, little_group_report, direct_mmn_covariance_report
+    from .extraction import evaluate_kpoints, record_kpoint_result
+
+    def save():
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
+
+    report['active_stage'] = 'diagnostic_mmn_comparison'
+    started = time.perf_counter()
+    report['mmn_invariants'] = mmn_invariant_report(bundle, kmap, edge_map)
+    report['comparison_scope'] = (
+        'Raw coefficient, energy and group metrics use the source WAVECAR basis. Comparing these matrices '
+        'with native MMN or its transport assumes that source and interface Bloch bases agree. '
+        'Coefficient Euclidean norms do not replace the PAW overlap metric.')
+    gamma_ibz = gamma_result['kpoint_1based'] - 1
+    gamma = int(ibz_interface[gamma_ibz])
+    d = None
+    try:
+        d, report['transport'] = transport_sewing(
+            bundle.mmn, bundle.neighbor_indices, kmap, edge_map, anti, gamma_result['matrices'],
+            anchor_k=gamma, edge_phases=phases)
+        backwards, _ = transport_sewing(
+            bundle.mmn, bundle.neighbor_indices, kmap, edge_map, anti, gamma_result['matrices'],
+            anchor_k=gamma, reverse_edges=True, edge_phases=phases)
+        report['transport']['reverse_tree_difference_max'] = float(np.max(abs(d-backwards)))
+    except (ValueError, np.linalg.LinAlgError) as error:
+        report['transport_error'] = str(error)
+    report['stage_seconds']['diagnostic_mmn_comparison'] = time.perf_counter() - started
+    report['diagnostic_kpoints'] = []
+    report['active_stage'] = 'diagnostic_selected_coefficients'
+    local_matrices = {}
+
+    def append_result(result):
+        raw = result['kpoint_1based'] - 1
+        ik = int(ibz_interface[raw])
+        matrices = result['matrices']
+        operation_rows = []
+        local_matrices[ik] = {}
+        for isym, matrix, metrics in zip(result['little_indices'], matrices,
+                                         result['operation_diagnostics'], strict=True):
+            isym = int(isym)
+            local_matrices[ik][isym] = matrix
+            operation_rows.append({**metrics,
+                'transport_difference_max_abs': None if d is None else float(np.max(abs(matrix - d[isym, ik])))})
+        report['diagnostic_kpoints'].append(dict(
+            wavecar_kpoint_1based=raw+1, interface_kpoint_1based=ik+1,
+            kpoint_fractional=metadata.kpoints[raw].tolist(),
+            energies_ev=result['kpoint_energies_ev'],
+            operation_indices_0based=list(map(int, result['little_indices'])),
+            matrices_real=matrices.real.tolist(), matrices_imag=matrices.imag.tolist(),
+            coefficient_closure_relative_max=float(result['closure']), operations=operation_rows,
+            group=little_group_report(matrices, result['little_indices'], metadata.kpoints[raw], sg)))
+        report['diagnostic_kpoints'].sort(key=lambda row: row['wavecar_kpoint_1based'])
+        report['evaluated_wavecar_kpoints_1based'] = [row['wavecar_kpoint_1based'] for row in report['diagnostic_kpoints']]
+        save()
+
+    append_result(gamma_result)
+    started = time.perf_counter()
+    group_dict = sg.as_dict()
+    tasks = [(wavecar, metadata.bands_1based, metadata.header.lattice, ik+1, group_dict,
+              little_indices[ik], metadata.source_identity, spin['spin_channel'])
+             for ik in selected if ik != gamma_ibz]
+    for result in evaluate_kpoints(tasks, workers=workers, diagnostics=True):
+        record_kpoint_result(report, result)
+        append_result(result)
+        print(f"Diagnosed stored k point {result['kpoint_1based']}/{metadata.header.num_kpoints}", flush=True)
+    report['read_accounting_complete'] = True
+    report['stage_seconds']['diagnostic_selected_coefficients'] = time.perf_counter() - started
+    report['active_stage'] = 'diagnostic_direct_mmn'
+    report['direct_mmn_covariance'] = direct_mmn_covariance_report(
+        bundle, kmap, edge_map, anti, phases, local_matrices)
+    report['active_stage'] = 'diagnostic_source_recheck'
+    save()
+
+
 def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_gb=None, spin_channel=None,
-                    tol=1e-5, energy_tol=1e-8):
+                    tol=1e-5, energy_tol=1e-8, diagnose_kpoints=None):
     """Export Bloch representations and apply approved coefficient-closure decisions without bypassing other checks."""
     started = time.perf_counter()
+    diagnostic = diagnose_kpoints is not None
+    if diagnostic:
+        diagnose_kpoints = list(diagnose_kpoints)
+        if (not diagnose_kpoints or any(isinstance(k, (bool, np.bool_)) or not isinstance(k, Integral)
+                                       or k < 1 for k in diagnose_kpoints)
+                or len(set(diagnose_kpoints)) != len(diagnose_kpoints)):
+            raise ValueError('Diagnostic k points must be distinct positive stored WAVECAR indices')
+        diagnose_kpoints = list(map(int, diagnose_kpoints))
     seed, wavecar, outcar = (Path(p).resolve() for p in (seed, wavecar, outcar))
     output = Path(output_dir).resolve()
     protected = {seed, wavecar, outcar}
@@ -511,14 +595,16 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
     if ((output.exists() and not output.is_dir()) or Path(output_dir).is_symlink()
             or any(output.is_relative_to(path) or path.is_relative_to(output) for path in protected)):
         raise ValueError('Output must be a real directory separate from input file paths; output symlinks are forbidden')
-    generated = [output / name for name in ('bloch.npz', 'report.json')]
+    report_path = output / ('diagnostic.json' if diagnostic else 'report.json')
+    generated = [report_path] if diagnostic else [output / 'bloch.npz', report_path]
+    protected_targets = protected | ({output / 'bloch.npz', output / 'report.json'} if diagnostic else set())
     existing = []
     for target in generated:
         if target.is_symlink() or (target.exists() and not target.is_file()):
             raise ValueError(f'Output target {target.name} must be a regular file, not a symlink or directory')
         resolved = target.resolve()
-        if (any(resolved.is_relative_to(path) or path.is_relative_to(resolved) for path in protected)
-                or (target.exists() and any(path.exists() and target.samefile(path) for path in protected))):
+        if (any(resolved.is_relative_to(path) or path.is_relative_to(resolved) for path in protected_targets)
+                or (target.exists() and any(path.exists() and target.samefile(path) for path in protected_targets))):
             raise ValueError(f'Output target {target.name} overlaps a protected input file')
         if target.exists():
             existing.append(target)
@@ -527,17 +613,19 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
                   gauge_status='unproven', residuals={}, numerical_gate=_GATE,
                   numerical_checks_passed=False,
                   gate_source='WannierBerri1.7.0 Symmetrizer_Uirr accuracy_threshold default')
+    if diagnostic:
+        report.update(schema='sawf-bridge-diagnostic-v1', diagnostic_only=True,
+                      requested_wavecar_kpoints_1based=diagnose_kpoints,
+                      limitation='Selected stored-k little groups only; completion is not physical acceptance or a full-grid SAWF certificate')
     residuals = report['residuals']
     if existing:
         import sys
         print('Warning: overwriting existing symmetry files: ' + ', '.join(path.name for path in existing),
               file=sys.stderr, flush=True)
-    # Invalidate the old pair before reading inputs, including interrupted reruns.
-    if generated[1] in existing:
-        generated[1].unlink()
-    generated[1].write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
-    if generated[0] in existing:
-        generated[0].unlink()
+    # Invalidate only the selected mode's outputs before reading inputs.
+    for target in existing:
+        target.unlink()
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
     try:
         from irrep.spacegroup import SpaceGroup
         import os
@@ -559,6 +647,8 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
         report['read_accounting_complete'] = False
         report['peak_rss_scope'] = 'peak_rss_kib is the parent process; per-k worker peaks are lifetime process maxima, not simultaneous node RSS'
         header = inspect_wavecar(wavecar)
+        if diagnostic and max(diagnose_kpoints) > header.num_kpoints:
+            raise ValueError(f'Diagnostic k points exceed the {header.num_kpoints} stored WAVECAR points')
         report['header_preflight_read_bytes'] = 128
         bundle = read_inputs(seed, source_nb=header.num_bands)
         report['source_hashes'] = bundle.hashes
@@ -641,6 +731,11 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
             raise ValueError('Exactly one stored Gamma anchor is required')
         gamma_ibz = int(gamma_rows[0])
         gamma = int(ibz_interface[gamma_ibz])
+        selected = sorted({k-1 for k in diagnose_kpoints} | {gamma_ibz}) if diagnostic else list(range(len(raw_k)))
+        if diagnostic:
+            report['planned_wavecar_kpoints_1based'] = [k+1 for k in selected]
+            report['evaluated_wavecar_kpoints_1based'] = []
+            report['gamma_added_automatically'] = gamma_ibz+1 not in diagnose_kpoints
         little_indices = [np.flatnonzero(kmap[:, ik] == ik).tolist() for ik in ibz_interface]
         if len(little_indices[gamma_ibz]) != len(operations):
             raise ValueError('Gamma must be fixed by every spatial and antiunitary operation')
@@ -656,12 +751,12 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
         if memory_gb is not None:
             budget = min(budget, int(memory_gb * 1024**3))
         estimate = estimate_wavecar_memory(metadata)
-        plan = worker_plan(requested=requested, allocated_cpus=allocated, jobs=max(1, len(raw_k)-1),
+        plan = worker_plan(requested=requested, allocated_cpus=allocated, jobs=max(1, len(selected)-1),
                            memory_bytes=budget, per_worker_bytes=estimate['per_worker_estimated_bytes'])
         report['memory_estimate'] = estimate_wavecar_memory(metadata, workers=plan['workers'])
         report['execution'] = plan
         report['stage_seconds']['input_and_metadata'] = time.perf_counter() - stage_started
-        print(f"Selected {nb} bands at {len(raw_k)} stored k points; "
+        print(f"Selected {nb} bands at {len(selected)} of {len(raw_k)} stored k points; "
               f"max NG={estimate['max_gvectors']}; workers={plan['workers']}; "
               f"estimated worker memory={estimate['per_worker_estimated_bytes']/1024**3:.2f} GiB", flush=True)
         stage_started = time.perf_counter()
@@ -669,7 +764,7 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
         group_dict = sg.as_dict()
         gamma_result = evaluate_kpoint(wavecar, metadata.bands_1based, metadata.header.lattice, gamma_ibz+1,
                                        group_dict, little_indices[gamma_ibz], metadata.source_identity,
-                                       spin['spin_channel'], gamma=True)
+                                       spin['spin_channel'], gamma=True, diagnostics=diagnostic)
         record_kpoint_result(report, gamma_result)
         anchors = gamma_result['matrices']
         report['gamma_anchor'] = dict(
@@ -685,16 +780,32 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
             budget = min(budget, available_memory_bytes())
         except ValueError:
             pass
-        plan = worker_plan(requested=requested, allocated_cpus=allocated, jobs=max(1, len(raw_k)-1),
+        plan = worker_plan(requested=requested, allocated_cpus=allocated, jobs=max(1, len(selected)-1),
                            memory_bytes=budget, per_worker_bytes=calibrated_worker_bytes)
         report['execution'] = {**plan, 'gamma_process_peak_rss_kib': gamma_result['peak_rss_kib'],
                                'calibration_scope': 'Parent process including Gamma; other k points may have different peaks'}
         report['memory_estimate'] = estimate_wavecar_memory(metadata, workers=plan['workers'])
         print(f"Gamma evaluated; planned worker processes: {plan['workers']}", flush=True)
         report['stage_seconds']['gamma_anchor'] = time.perf_counter() - stage_started
+        if diagnostic:
+            _diagnose_selected(report, report_path, bundle, sg, metadata, wavecar, spin, selected,
+                               ibz_interface, little_indices, gamma_result, kmap, edge_map, anti, phases,
+                               workers=plan['workers'])
+            verify_wavecar_source(wavecar, metadata.source_identity)
+            for suffix, expected in bundle.hashes.items():
+                if hashlib.sha256(Path(f'{seed}.{suffix}').read_bytes()).hexdigest() != expected:
+                    raise ValueError('Original interface files changed during diagnostics')
+            if hashlib.sha256(outcar.read_bytes()).hexdigest() != report['outcar']['sha256']:
+                raise ValueError('OUTCAR changed during diagnostics')
+            report.pop('active_stage', None)
+            report.update(status='diagnostic_complete', no_polar_projection=True,
+                          gauge_status='diagnosed_not_certified')
+            _runtime_summary(report, started)
+            report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
+            return report
         stage_started = time.perf_counter()
         report['active_stage'] = 'mmn_transport'
-        (output / 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
         d, transport = transport_sewing(bundle.mmn, bundle.neighbor_indices, kmap, edge_map, anti, anchors, anchor_k=gamma, edge_phases=phases)
         report['transport'] = transport
         _check(residuals, 'mmn_covariance_max', transport['mmn_covariance_max'])
@@ -769,11 +880,13 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
         report['failed_stage_seconds'] = time.perf_counter() - locals().get('stage_started', started)
         if not report.get('read_accounting_complete', False):
             report['read_accounting_note'] = 'Counts cover completed reads returned to the parent; interrupted or failed worker reads may be unreported'
-        if (output / 'bloch.npz').exists():
+        if diagnostic:
+            report['status'] = 'diagnostic_failed'
+        if not diagnostic and (output / 'bloch.npz').exists():
             (output / 'bloch.npz').unlink()
         _runtime_summary(report, started)
-        (output / 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
         raise
     _runtime_summary(report, started)
-    (output / 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
     return report

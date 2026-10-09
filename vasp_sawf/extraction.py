@@ -2,6 +2,7 @@
 
 from concurrent.futures import ProcessPoolExecutor
 import copy
+from functools import partial
 import multiprocessing
 import os
 from pathlib import Path
@@ -124,7 +125,8 @@ def worker_plan(*, requested, allocated_cpus, jobs, memory_bytes, per_worker_byt
                 memory_policy='Estimate with headroom, not a guaranteed RSS bound; calibrate on allocated hardware')
 
 
-def evaluate_kpoint(wavecar, bands, lattice, kindex, group_dict, little_indices, source_identity, spin_channel=1, *, gamma=False):
+def evaluate_kpoint(wavecar, bands, lattice, kindex, group_dict, little_indices, source_identity, spin_channel=1,
+                    *, gamma=False, diagnostics=False):
     """Read one complete selected-band k point and return only small numerical results."""
     from irrep.spacegroup import SpaceGroup
     from .wavecar import read_selected_wavecar
@@ -145,6 +147,11 @@ def evaluate_kpoint(wavecar, bands, lattice, kindex, group_dict, little_indices,
     wf = point.WF.reshape(nb, -1)
     closure = gamma_lstsq = 0.
     matrices = []
+    if diagnostics:
+        energies = np.asarray(point.Energy_raw, dtype=float)
+        if energies.shape != (nb,) or not np.isfinite(energies).all():
+            raise ValueError('Diagnostic k-point energies must be a finite vector with one entry per selected band')
+        operation_diagnostics = []
     for isym in little_indices:
         operation = sg.symmetries[isym]
         local = point.symm_matrix(point, operation, block_indices=np.array([[0, nb]]), unitary=False)[0]
@@ -154,20 +161,44 @@ def evaluate_kpoint(wavecar, bands, lattice, kindex, group_dict, little_indices,
         norm = np.linalg.norm(transformed)
         if not np.isfinite(norm) or norm <= 0:
             raise ValueError('Independently transformed coefficient norms are nonfinite or zero')
-        closure = _finite_max(closure, float(np.linalg.norm(local.T @ wf - transformed) / norm))
-        if gamma:
+        coefficient_residual = local.T @ wf - transformed
+        relative_closure = float(np.linalg.norm(coefficient_residual) / norm)
+        closure = _finite_max(closure, relative_closure)
+        if diagnostics:
+            band_norms = np.linalg.norm(transformed, axis=1)
+            if not np.isfinite(band_norms).all() or np.any(band_norms <= 0):
+                raise ValueError('Per-band transformed coefficient norms must be finite and nonzero')
+            per_band_closure = (np.linalg.norm(coefficient_residual, axis=1) / band_norms).tolist()
+        del coefficient_residual
+        if gamma or diagnostics:
             direct = np.linalg.lstsq(wf.T, transformed.T, rcond=None)[0]
-            gamma_lstsq = _finite_max(gamma_lstsq, float(np.max(abs(local - direct))))
+            lstsq_difference = _finite_max(0., float(np.max(abs(local - direct))))
+            if gamma:
+                gamma_lstsq = _finite_max(gamma_lstsq, lstsq_difference)
+        if diagnostics:
+            energy_residual = (energies[:, None] - energies[None, :]) * local
+            operation_diagnostics.append(dict(
+                operation_index_0based=int(isym),
+                coefficient_closure_relative_fro=relative_closure,
+                per_band_relative_closure=per_band_closure,
+                unitarity_max_abs=float(np.max(abs(local.conj().T @ local - np.eye(nb)))),
+                singular_values=np.linalg.svd(local, compute_uv=False).tolist(),
+                energy_intertwining_max_abs_ev=float(np.max(abs(energy_residual))),
+                energy_intertwining_norm2_ev=float(np.linalg.norm(energy_residual, ord=2)),
+                independent_lstsq_difference_max=lstsq_difference))
         matrices.append(local)
-    return dict(kpoint_1based=int(kindex), little_indices=list(map(int, little_indices)),
-                matrices=np.array(matrices), closure=closure, gamma_lstsq=gamma_lstsq,
-                read_ledger=list(stored.read_ledger), read_seconds=read_seconds,
-                compute_seconds=time.perf_counter() - started - read_seconds,
-                peak_rss_kib=int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
+    result = dict(kpoint_1based=int(kindex), little_indices=list(map(int, little_indices)),
+                  matrices=np.array(matrices), closure=closure, gamma_lstsq=gamma_lstsq,
+                  read_ledger=list(stored.read_ledger), read_seconds=read_seconds,
+                  compute_seconds=time.perf_counter() - started - read_seconds,
+                  peak_rss_kib=int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss))
+    if diagnostics:
+        result.update(operation_diagnostics=operation_diagnostics, kpoint_energies_ev=energies.tolist())
+    return result
 
 
-def _evaluate_task(arguments):
-    return evaluate_kpoint(*arguments)
+def _evaluate_task(arguments, *, diagnostics=False):
+    return evaluate_kpoint(*arguments, diagnostics=diagnostics)
 
 
 def record_kpoint_result(report, result):
@@ -180,14 +211,15 @@ def record_kpoint_result(report, result):
         ('kpoint_1based', 'read_seconds', 'compute_seconds', 'peak_rss_kib')})
 
 
-def evaluate_kpoints(tasks, *, workers):
+def evaluate_kpoints(tasks, *, workers, diagnostics=False):
     """Spawn independent readers; never send wavefunction arrays between processes."""
+    evaluate = partial(_evaluate_task, diagnostics=diagnostics)
     if workers == 1:
         for task in tasks:
-            yield _evaluate_task(task)
+            yield evaluate(task)
         return
     executor = ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context('spawn'))
     try:
-        yield from executor.map(_evaluate_task, tasks, chunksize=1)
+        yield from executor.map(evaluate, tasks, chunksize=1)
     finally:
         executor.shutdown(wait=True, cancel_futures=True)

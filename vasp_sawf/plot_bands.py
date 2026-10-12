@@ -32,7 +32,7 @@ DPI = 600
 TRANSPARENT = True
 
 
-def plot_bands(input_file, output_dir):
+def plot_bands(input_file, output_dir, *, ylim=None):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     plt.rcParams.update({
@@ -46,6 +46,7 @@ def plot_bands(input_file, output_dir):
         segments = bands["segment_slices"]
         ticks = bands["tick_positions"]
         labels = bands["tick_labels"].tolist()
+        labels = [r"$\Gamma$" if label in ("G", "Gamma", "GAMMA") else label for label in labels]
         energy_reference = float(bands["energy_reference_ev"])
 
         for name in ("dft", "wannier", "sawf"):
@@ -64,7 +65,7 @@ def plot_bands(input_file, output_dir):
             axis.set_ylabel("Energy (eV)", fontsize=YLABEL_FONT_SIZE)
             axis.set_xticks(ticks, labels)
             axis.set_xlim(distance[0], distance[-1])
-            axis.set_ylim(*YLIM)
+            axis.set_ylim(*(YLIM if ylim is None else ylim))
             for spine in axis.spines.values():
                 spine.set_linewidth(BORDER_WIDTH)
             axis.tick_params(direction="in", width=BORDER_WIDTH)
@@ -88,8 +89,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path, help="Existing bands.npz")
     parser.add_argument("--output", type=Path, default=Path("figures"), help="Figure directory")
+    parser.add_argument("--ylim", nargs=2, type=float, metavar=("LOW", "HIGH"), help="Displayed energy range after reference subtraction (eV)")
     args = parser.parse_args()
-    plot_bands(args.input, args.output)
+    plot_bands(args.input, args.output, ylim=args.ylim)
 
 
 if __name__ == "__main__":

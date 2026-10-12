@@ -150,6 +150,56 @@ Here `--symmetry` must contain a completed `diagnostic.json` from `sawf-extract 
 
 Only `trial.npz` and `summary.json` are written. The arrays include the full gauge, original eigenvalues, centers/spreads, raw and reconstructed Bloch actions, target matrices and k mappings. The summary retains the original diagnostic report, raw and reconstructed residuals, action changes, convergence and Hamiltonian covariance. A selected-point diagnostic does not certify closure at every stored k point. Even a converged trial always has `accepted=false` and `sawf_ready=false`; it cannot be used by the production model exporter and does not write `model.npz`, `hr.dat` or `WANPROJ`. This mode does not accept a DFT path argument or establish interpolation accuracy. Physical error-budget assessment remains separate from numerical convergence.
 
+### Analyzing a saved trial
+
+A converged trial can be analyzed without repeating SAWF or reading WAVECAR:
+
+```bash
+sawf-run --analyze-trial /path/to/trial --output /path/to/analysis
+sawf-plot-bands /path/to/analysis/bands.npz --output /path/to/figures --ylim -0.12 -0.04
+```
+
+`--seed` overrides the saved source location when moving between machines; the original interface hashes must still match. The target and constrained gauge come from the saved trial, so do not supply new center/orbital arguments. An ordinary-Wannier comparison is recomputed from the original SCDM AMN. The default path has 101 points per WIN segment (`--points-per-segment` changes this); `--energy-reference-ev` applies one common display reference and does not change any Hamiltonian.
+
+The new analysis directory contains:
+
+- `analysis.npz`: the saved full gauge and original EIG, lattice, centers/spreads, weighted `R/H_R`, ordinary-Wannier comparison arrays, and sampled symmetry/locality diagnostics.
+- `bands.npz`: dense WIN-path energies for ordinary Wannier and SAWF, ready for the existing plotting command.
+- `summary.json`: bound input/output hashes, Fourier roundtrip, symmetry residuals, continuous Fourier error bounds, antiunitary degeneracy checks and locality measurements. Numerical bounds describe the finite interpolated Hamiltonian, not its error relative to DFT.
+- `dft_bands.npz`, optionally: DFT and both interpolations at the actual supplied DFT path coordinates. Supply one file or ordered split files with `--dft-eigenval EIGENVAL.0 EIGENVAL.1 ...`. This is a comparison reference; the command does not establish matching DFT settings. Plot it with the same `sawf-plot-bands` command.
+
+The analysis retains `diagnostic_only=true`, `accepted=false` and `sawf_ready=false`; it does not export a production model, WANPROJ or symmetry-averaged hoppings. These flags do not prevent inspection of the saved approximate Hamiltonian. They distinguish that use from a certified source-wavefunction or exact-symmetry claim.
+
+For direct numerical work, the Fourier arrays are self-contained:
+
+```python
+import numpy as np
+
+with np.load("analysis.npz", allow_pickle=False) as result:
+    R, H_R = result["R"], result["H_R"]
+k = np.array([[0.0, 0.0, 0.0], [0.25, 0.25, 0.0]])
+H_k = np.einsum("kr,rij->kij", np.exp(2j*np.pi*k@R.T), H_R)
+energies_eV = np.linalg.eigvalsh(H_k)
+```
+
+Do not divide `H_R` by degeneracies again. Energies remain on the original EIG reference; a plotting reference is subtracted only when drawing figures.
+
+### Interpreting symmetry errors
+
+Let `E(k)` be the original diagonal eigenvalue matrix, `B_g(k)` the unitary Bloch sewing matrix, and `D_g(k)` the target Wannier representation. Sewing matrices describe how symmetry maps the Bloch basis between k points. If `B_g C_g(U)=U(gk) D_g`, then for `H=U† E U`,
+
+```text
+||H(gk) - D_g C_g(H(k)) D_g†||_2 = ||E(gk) B_g - B_g E(k)||_2.
+```
+
+Here `C_g` conjugates antiunitary inputs, and `||.||_2` is the largest singular value. Thus exact gauge covariance cannot remove an incompatibility between the input energies and the imposed sewing matrices. Equal sorted energies at symmetry-related k points do not ensure that the sewing matrices map the correct eigenspaces. Raw and reconstructed actions remain distinct evidence.
+
+The continuous interpolation bound is calculated from the finite Fourier coefficients of the residual, retaining all site/cell phases. It covers the axes sampled by the original mesh, with other reduced coordinates fixed at zero (for a 6x6x1 slab, the full `kz=0` plane). It combines a triangle bound with a periodic-grid covering bound based on derivatives. Floating-point allowance is reported separately; the calculation does not use interval arithmetic. This bounds the symmetry defect of the interpolated model, not its total error relative to DFT.
+
+An antiunitary operation that fixes k modulo reciprocal translations and squares to `-I` requires paired eigenvalues. This can hold on a boundary for screw times time reversal as well as at ordinary TR-invariant points. A measured adjacent-pair splitting `d` requires at least `d/2` maximum eigenvalue change for exact pairing. Keeping those energies also forces a covariance defect of at least `d`. These are mathematical lower bounds; the code does not average the Hamiltonian to enforce them.
+
+Compare an energy budget with the observable's scale: a small fraction of the bandwidth may exceed a narrow avoided crossing. Individual eigenvectors and symmetry labels near such crossings need more care than band dispersion. Matching ordinary-Wannier and SAWF interpolations does not independently validate either against DFT.
+
 ## Exporting an existing model
 
 No localization or WAVECAR access is needed:
@@ -188,7 +238,7 @@ Orbital rotations and column-dependent lattice translations change tensor entrie
 
 All modes require a closed square `NB=NW` subspace, a complete Gamma-centered mesh and an actual Gamma wavefunction, and WAVECAR RTAG 45200 with one energy record per k point. SOC additionally requires a nonmagnetic grey-group candidate, Cartesian SAXIS and an even dimension. These restrictions reflect implemented algorithms or file formats; removing their checks would not implement the missing behavior. Arbitrary spin axes, noncollinear non-SOC calculations, joint collinear-channel constraints/export, and disentanglement remain unsupported.
 
-Spatial operations retain full Seitz rotations/translations, including screws, glides and integer composition shifts; antiunitary operations include complex conjugation. Targets may contain multiple symmetry-related centers. Analytic tests cover these operations and scalar extraction/localization, including both collinear channels. A small real non-SOC Si WAVECAR is checked against independent pymatgen and IrRep readers. SrVO3 remains the material with end-to-end real-data regression; a real magnetic `ISPIN=2` calculation has not yet been tested. This does not establish a completed tSnS workflow.
+Spatial operations retain full Seitz rotations/translations, including screws, glides and integer composition shifts; antiunitary operations include complex conjugation. Targets may contain multiple symmetry-related centers. Analytic tests cover these operations and scalar extraction/localization, including both collinear channels. A small real non-SOC Si WAVECAR is checked against independent pymatgen and IrRep readers. SrVO3 has accepted end-to-end real-data regression. tSnS has a converged eight-band diagnostic trial and an analysis route that retains its measured input errors; this does not promote it to an accepted production model. A real magnetic `ISPIN=2` calculation has not yet been tested.
 
 The packaged `accepted_closure.json` records dataset-specific user decisions, each bound to four exact interface hashes. The original SrVO3 residual is `2.589629272055618e-6`, with maximum `2.59e-6`. On 2026-10-07 the user also accepted `1.5343413566685595e-6` for the new SrVO3 restart calculation (`ISTART=1`, `LWAVE=F`, `IALGO=2`); its bound `1.534345e-6` is the upper rounding boundary of the reviewed `1.53434e-6`. Acceptance concerns the single-particle SAWF/band model and does not modify other matrix checks or convergence requirements. Other inputs do not inherit either decision, and neither certifies bare Coulomb accuracy. A reviewed legacy bundle can be loaded without rewriting its report.
 

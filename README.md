@@ -119,7 +119,11 @@ For independent target orbits, repeat `--center X Y Z --orbital NAME` in matchin
 
 Localization still requires a new output directory outside its input directories and never overwrites an existing result.
 
-The program first localizes the original guess to determine a reversible column/cell alignment, then runs SAWF from the aligned SCDM guess. Exhausting the iteration budget is an error. It does not drop bands or average the Hamiltonian in postprocessing.
+The program first localizes the original guess to determine a reversible column/cell alignment, then runs SAWF from the aligned SCDM guess. The constrained objective includes every edge of the original full-mesh PAW MMN, including both ends of each edge in its gradient. A fresh constrained gradient, not the optimizer's success message or a small change in spread, establishes numerical stationarity. Exhausting the iteration budget is an error. Numerical stationarity does not establish a global minimum. No bands are dropped and the Hamiltonian is not averaged in postprocessing.
+
+Before localization, the normal command checks the raw Bloch action against the original MMN, EIG, group law and antiunitary constraints. Only after these checks pass does it reconstruct an algebraically consistent unitary/antiunitary action, using the full Seitz and spinor composition factors. The correction must fit the unchanged numerical matrix bound, and the same checks are repeated against the original inputs. A failed raw check cannot be repaired into production acceptance. Source arrays are preserved; the summary records raw residuals, the correction and reconstructed residuals.
+
+The full-grid kernel is intended for compact subspaces. It refuses a dense tangent construction before allocation if the estimated per-chart workspace exceeds 256 MiB; this is not a total-process memory limit and excludes input arrays. Newton refinement, when needed, is limited to 1024 real parameters. The summary records the workspace estimate, optimization stops and final gradient. Nominally zero spreads can have a negative sign from floating-point cancellation: the unmodified values and an explicit arithmetic roundoff guard are recorded. Larger negative values still fail.
 
 A successful run writes:
 
@@ -129,6 +133,22 @@ A successful run writes:
 - `bands.npz`: optional, with `--dft-eigenval /path/to/EIGENVAL --energy-reference-ev VALUE`.
 
 The model convention is `Psi_W(k) = Psi_Bloch(k) U(k)` and `H(k) = sum_R exp(+2*pi*i*k.R) H_R`. K points use fractional reciprocal coordinates; R uses integer lattice coordinates; H is in eV, centers/lattice in angstrom, spreads in angstrom squared. `H_R` already includes orbital-pair Wigner–Seitz weights.
+
+### Numerical trials from existing diagnostics
+
+When extraction diagnostics exist but the physical residuals have not been accepted, an explicit trial can test representation compatibility and constrained localization without another WAVECAR read:
+
+```bash
+sawf-run --trial \
+  --seed /path/to/interface/wannier90 \
+  --symmetry /path/to/symmetry \
+  --center X Y Z --orbital ORBITAL \
+  --output /path/to/trial
+```
+
+Here `--symmetry` must contain a completed `diagnostic.json` from `sawf-extract --diagnose-kpoints`. The command binds its hashes, spin semantics, operations, band mapping and selected k-point evidence to the original WIN/AMN/MMN/EIG. It transports the raw anchor with native MMN, reconstructs an exact group action, checks the target representation, and optimizes on the complete original mesh. For multiple target orbits, repeat the center/orbital pair as above. Fractional cell representatives and their integer lattice shifts remain part of the Bloch phases, including complex conjugation for antiunitary operations.
+
+Only `trial.npz` and `summary.json` are written. The arrays include the full gauge, original eigenvalues, centers/spreads, raw and reconstructed Bloch actions, target matrices and k mappings. The summary retains the original diagnostic report, raw and reconstructed residuals, action changes, convergence and Hamiltonian covariance. A selected-point diagnostic does not certify closure at every stored k point. Even a converged trial always has `accepted=false` and `sawf_ready=false`; it cannot be used by the production model exporter and does not write `model.npz`, `hr.dat` or `WANPROJ`. This mode does not accept a DFT path argument or establish interpolation accuracy. Physical error-budget assessment remains separate from numerical convergence.
 
 ## Exporting an existing model
 

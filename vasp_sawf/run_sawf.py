@@ -13,10 +13,14 @@ def main():
     parser.add_argument('--orbital', required=True, action='append', help='Target local representation, such as t2g; one per --center, in matching order')
     parser.add_argument('--output', required=True, type=Path, help='New model output directory')
     parser.add_argument('--num-iter', type=int, default=1000, help='Maximum localization iterations')
+    parser.add_argument('--trial', action='store_true', help='Use diagnostic.json for an explicitly unaccepted numerical trial; never export model.npz, hr or WANPROJ')
     parser.add_argument('--dft-eigenval', type=Path, help='Optional DFT path EIGENVAL for exporting data for the three band plots')
     parser.add_argument('--energy-reference-ev', type=float, default=0., help='Shared plot energy reference; defaults to absolute energies')
     args = parser.parse_args()
-    from vasp_sawf.localize import run_sawf
+    if args.trial:
+        from vasp_sawf.trial import run_trial as run_sawf
+    else:
+        from vasp_sawf.localize import run_sawf
     try:
         report = run_sawf(args.seed, args.symmetry, args.output,
                           center=args.center, orbital=args.orbital, num_iter=args.num_iter,
@@ -25,7 +29,8 @@ def main():
     except (ValueError, OSError, RuntimeError) as error:
         print(f'SAWF failed: {error}', file=sys.stderr)
         return 1
-    print(f"Model: {args.output.resolve()}; status: {report['status']}; converged: {report['converged']}")
+    label = 'Numerical trial (not accepted)' if args.trial else 'Model'
+    print(f"{label}: {args.output.resolve()}; status: {report['status']}; converged: {report['converged']}")
     return 0
 
 

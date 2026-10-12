@@ -420,6 +420,82 @@ def wannierise_strict(data, symmetrizer, *, num_iter=1000, conv_tol=1e-9, num_it
                 physical_source_and_target_validation="required_before_call_not_certified_by_driver")
 
 
+def _check_spread_nonnegativity(spreads, centers, weights, mmn, report):
+    """Allow arithmetic cancellation at zero; retain every raw spread value."""
+    spreads, centers = np.asarray(spreads), np.asarray(centers)
+    nb = len(spreads)
+    norm2 = float(np.max(np.sum(abs(np.asarray(mmn))**2, axis=(-2, -1))))
+    scale = (float(np.sum(abs(np.asarray(weights))))*(1 + norm2 + np.pi**2)
+             + float(np.max(np.sum(centers**2, axis=-1))))
+    guard = 256*np.finfo(float).eps*nb*max(1.0, scale)
+    minimum = float(np.min(spreads))
+    report['spread_nonnegativity'] = dict(
+        minimum_raw_angstrom2=minimum if np.isfinite(minimum) else None,
+        roundoff_guard_angstrom2=guard if np.isfinite(guard) else None,
+        arithmetic_scale_angstrom2=scale if np.isfinite(scale) else None,
+        all_spreads_finite=bool(np.isfinite(spreads).all()), values_modified=False,
+        guard_definition='256*float64_eps*NB*max(1, sum_abs_weights*(1+max_M_Frobenius_squared+pi_squared)+max_center_squared)',
+        interpretation='Floating-point cancellation guard, not a physical acceptance tolerance')
+    if (not np.isfinite(spreads).all() or not np.isfinite(scale)
+            or minimum < -guard):
+        raise ValueError('Final spreads are nonfinite or negative beyond floating-point roundoff')
+
+
+def wannierise_full_mesh(data, symmetrizer, target, *, initial_gauge=None, num_iter=1000):
+    """Optimize every native MMN edge and publish a checkpoint only after convergence."""
+    from .fullmesh import optimize_full_mesh
+
+    if type(num_iter) is not int or num_iter < 1:
+        raise ValueError('The full-grid iteration budget must be a positive integer')
+    originals, neighbours = _validated_inputs(data, symmetrizer)
+    nk, nb = symmetrizer.NK, symmetrizer.NB
+    target = np.asarray(target, dtype=complex)
+    if target.shape != (symmetrizer.Nsym, nk, nb, nb) or not np.isfinite(target).all():
+        raise ValueError('Target matrices must cover every operation, k point and Wannier function')
+    initial = (_full_rank_polar(np.array([data.amn.data[k] for k in range(nk)]), 'original AMN')[0]
+               if initial_gauge is None else _square_matrices(initial_gauge, nk, nb, 'initial gauge'))
+    if _unitarity_error(initial) > 256*np.finfo(float).eps*nb:
+        raise ValueError('Initial gauge failed the floating-point unitarity check')
+    try:
+        for i in range(symmetrizer.NKirr):
+            StrictSymmetrizerUirr(symmetrizer, i)
+        gauge, result = optimize_full_mesh(initial, symmetrizer, target,
+            np.array([data.mmn.data[k] for k in range(nk)]), neighbours,
+            np.asarray(data.bkvec.wk), np.asarray(data.bkvec.bk_cart), maxiter=num_iter)
+        if not result['numerical_converged']:
+            raise RuntimeError('Full-grid optimization returned without numerical convergence')
+        candidate = copy(data.chk)
+        candidate.v_matrix = dict(enumerate(gauge))
+        centers, spreads = candidate.get_wannier_centers(data.bkvec, data.mmn, spreads=True)
+        center_error = float(abs(centers-np.asarray(result['centers_angstrom'])).max())
+        spread_error = float(abs(spreads-np.asarray(result['spreads_angstrom2'])).max())
+        unitarity = _unitarity_error(gauge)
+        covariance = max(float(abs(gauge[symmetrizer.kptirr2kpt[i, g]]
+                         - symmetrizer.rotate_U(gauge[k], i, g)).max())
+                         for i, k in enumerate(symmetrizer.kptirr) for g in range(symmetrizer.Nsym))
+        if unitarity > 1e-6 or covariance > 1e-6:
+            raise RuntimeError('The final full-grid gauge violates unitarity or symmetry')
+        if (not np.isfinite(centers).all() or not np.isfinite(spreads).all()
+                or center_error > 1e-6 or spread_error > 1e-2):
+            raise RuntimeError('Full-grid objective and independent checkpoint evaluator disagree')
+        _check_spread_nonnegativity(spreads, centers, data.bkvec.wk,
+                                   np.array([data.mmn.data[k] for k in range(nk)]), result)
+    finally:
+        _assert_unchanged(data, originals)
+    update_chk(w90data=data, U_opt_full_BZ=gauge, wcc=centers, spreads=spreads)
+    data.set_symmetrizer(symmetrizer, read_npz=False)
+    data.wannierised = True
+    result.update(schema='sawf-fullmesh-localisation-v1', objective_scope='all_native_mmn_edges',
+        shape_nk_nb_nw=list(gauge.shape), converged=True, excluded_bands=[],
+        initialization='polar(original_AMN)' if initial_gauge is None else 'provided_original_AMN_alignment',
+        gauge_unitarity_max_abs=unitarity, full_symmetry_covariance_max_abs=covariance,
+        centers_angstrom=centers.tolist(), spreads_angstrom2=spreads.tolist(),
+        center_recompute_max_abs_angstrom=center_error, spread_recompute_max_abs_angstrom2=spread_error,
+        input_matrix_max_abs_changes={name: 0.0 for name in originals},
+        physical_source_and_target_validation='required_before_call_not_certified_by_driver')
+    return result
+
+
 def _validate_spin_metadata(arrays, report, *, win_text=None):
     """Bind explicit spin semantics; older packages describe the original SOC workflow."""
     keys = ('spinor', 'source_ispin', 'spin_channel', 'antiunitary_kind')
@@ -547,6 +623,44 @@ def _new_output(output_dir, source_files):
     return output
 
 
+def _checked_bloch_action(bundle, sg, raw, report):
+    """Check raw evidence first, then require a nearby exact action to pass the same checks."""
+    from .representation import reconstruct_representation
+    from .symmetry import build_symmetry_maps, mmn_translation_phases, group_residuals, _validate_grey_group
+
+    kmap, edges = build_symmetry_maps(bundle, sg)
+    anti = np.array([op.time_reversal for op in sg.symmetries])
+    phases = mmn_translation_phases(bundle, sg)
+    product, translations, factors = map(np.asarray, sg.get_product_table(get_diff=True))
+    nb = bundle.mmn.shape[-1]
+    pure_t = _validate_grey_group(sg)
+    tr_square = -1 if sg.spinor else 1
+    def check(d, prefix):
+        covariance = []
+        for g, conjugate in enumerate(anti):
+            transformed = (d[g, :, None].conj().swapaxes(-1, -2)
+                @ bundle.mmn[kmap[g, :, None], edges[g]] @ d[g, bundle.neighbor_indices])
+            expected = phases[g, :, :, None, None]*(bundle.mmn.conj() if conjugate else bundle.mmn)
+            covariance.append(float(abs(transformed-expected).max()))
+        _gate(report, prefix+'all_native_MMN_covariance_max', max(covariance))
+        _gate(report, prefix+'energy_covariance_eV', np.max(abs(
+            bundle.eig[kmap, :, None]*d-d*bundle.eig[None, :, None, :])))
+        _gate(report, prefix+'unitarity_max', _unitarity_error(d))
+        group = group_residuals(d, kmap, anti, product, factors,
+            kpoints=bundle.kpoints, translations_diff=translations)
+        _gate(report, prefix+'group_composition_max', group['group_composition_max'])
+        square = 'TR_squared_plus_identity_max' if sg.spinor else 'K_squared_minus_identity_max'
+        _gate(report, prefix+square, np.max(abs(d[pure_t, kmap[pure_t]]@d[pure_t].conj()-tr_square*np.eye(nb))))
+    check(raw, 'bloch_')
+    cocycle = np.array([[factors[g, h]*np.exp(-2j*np.pi*(bundle.kpoints[kmap[product[g, h]]]@translations[g, h]))
+                        for h in range(len(anti))] for g in range(len(anti))])
+    exact, correction = reconstruct_representation(raw, kmap, anti, product, cocycle)
+    report['representation_reconstruction'] = correction
+    _gate(report, 'representation_correction_entry_max', np.max(abs(exact-raw)))
+    check(exact, 'reconstructed_bloch_')
+    return exact
+
+
 def _ordinary_initial_gauge(data, *, num_iter=1000):
     """Localize original AMN in memory to supply U and centers for initial-guess alignment without additional DFT input."""
     from wannierberri.wannierise.wannierise import wannierise
@@ -605,6 +719,8 @@ def run_sawf(seed, symmetry_dir, output_dir, *, center, orbital, num_iter=1000,
                       center,orbital,dft_eigenval,energy_reference_ev)
     except Exception as error:
         report.update(error=str(error),last_output_lines=transcript.getvalue().splitlines()[-15:])
+        if hasattr(error, 'report'):
+            report['localisation'] = error.report
         raise
     finally:
         report.update(seconds=time.perf_counter()-started,
@@ -677,25 +793,8 @@ def _run_sawf(seed, symmetry_dir, output, report, num_iter,
     kmap, edge_map = build_symmetry_maps(bundle, sg)
     if not np.array_equal(kmap, arrays['kmap']):
         raise ValueError('Packaged k-point/G mappings disagree with the actual interface')
-    d = arrays['d']
-    edge_phases = mmn_translation_phases(bundle, sg)
-    covariance = []
-    for s,anti in enumerate(arrays['time_reversals']):
-        mg = bundle.mmn[kmap[s,:,None],edge_map[s]]
-        reconstructed = d[s,:,None].conj().swapaxes(-1,-2) @ mg @ d[s,bundle.neighbor_indices]
-        expected = edge_phases[s, :, :, None, None]*(bundle.mmn.conj() if anti else bundle.mmn)
-        covariance.append(np.max(abs(reconstructed-expected)))
-    _gate(report, 'bloch_all_native_MMN_covariance_max', np.max(covariance))
-    _gate(report, 'bloch_energy_covariance_eV',
-          np.max(abs(bundle.eig[kmap,:,None]*d-d*bundle.eig[None,:,None,:])))
-    _gate(report, 'bloch_unitarity_max', np.max(abs(d.conj().swapaxes(-1,-2) @ d - np.eye(nb))))
+    d = _checked_bloch_action(bundle, sg, arrays['d'], report)
     sym = make_symmetrizer(bundle, sg, d)
-    product = group_residuals(d, kmap, sym.time_reversals, sym.sym_product_table, sym.spinor_factors,
-                              kpoints=bundle.kpoints, translations_diff=sym.translations_diff)
-    _gate(report, 'bloch_group_composition_max', product['group_composition_max'])
-    t = _validate_grey_group(sg)
-    square_key = 'bloch_TR_squared_plus_identity_max' if spinor else 'bloch_K_squared_minus_identity_max'
-    _gate(report, square_key, np.max(abs(d[t, kmap[t]] @ d[t].conj()-spin['time_reversal_square']*np.eye(nb))))
     target_blocks, target_centers, target_report = _target_representation(sym, center, orbital)
     if sym.num_wann != nb:
         raise ValueError(f'Target representation produces {sym.num_wann} functions, inconsistent with {nb} target bands')
@@ -726,7 +825,7 @@ def _run_sawf(seed, symmetry_dir, output, report, num_iter,
     alignment['ordinary_provenance'] = 'Official unconstrained localization from original AMN in the same process; all three input matrices remain elementwise unchanged'
     report['initial_alignment'] = alignment
     report['ordinary_initialization'] = ordinary_report
-    report['localisation'] = wannierise_strict(data, sym, frozen_all=True, num_iter=num_iter, initial_gauge=initial)
+    report['localisation'] = wannierise_full_mesh(data, sym, D, num_iter=num_iter, initial_gauge=initial)
     u = np.array([data.chk.v_matrix[k] for k in range(sym.NK)])
     cov, hcov = [], []
     hk = u.conj().swapaxes(-1,-2) @ (bundle.eig[:,:,None]*u)
@@ -762,8 +861,7 @@ def _run_sawf(seed, symmetry_dir, output, report, num_iter,
         _gate(report, 'TRIM_Kramers_max_split_eV', np.max(abs(energies[:,1::2]-energies[:,::2])))
     _gate(report, 'target_center_covariance_max_abs_angstrom', _center_covariance(sym, centers))
     report['target_center_displacement_max_abs_angstrom'] = float(np.max(abs(centers-target_centers @ bundle.lattice)))
-    if not np.isfinite(spreads).all() or np.any(spreads < 0):
-        raise ValueError('Final spreads are nonfinite or negative')
+    _check_spread_nonnegativity(spreads, centers, data.bkvec.wk, bundle.mmn, report)
     for ext, expected in bundle.hashes.items():
         if hashlib.sha256(Path(f'{seed}.{ext}').read_bytes()).hexdigest() != expected:
             raise ValueError('Inputs changed during localization')

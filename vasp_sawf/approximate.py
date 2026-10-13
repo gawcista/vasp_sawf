@@ -98,6 +98,17 @@ def _prepare_output(output_dir, inputs):
     return output
 
 
+def _new_model_output(output_dir, inputs):
+    requested = Path(output_dir)
+    output = requested.resolve()
+    protected = {Path(path).resolve() for path in inputs}
+    if (requested.is_symlink() or output.exists()
+            or any(output.is_relative_to(path) or path.is_relative_to(output) for path in protected)):
+        raise ValueError('Model output must be a new real directory separate from protected input file paths')
+    output.mkdir(parents=True, exist_ok=False)
+    return output
+
+
 def _base_report(schema):
     return dict(schema=schema, status='not_ready', accepted=False, sawf_ready=False,
         strict_ready=False, strict_checks_passed=False, numerical_checks_passed=False,
@@ -247,14 +258,13 @@ def run_approximate(seed, symmetry_dir, output_dir, *, center, orbital, num_iter
                     dft_eigenval=None, energy_reference_ev=0., points_per_segment=101):
     """Localize unchanged inputs and enforce the reviewed Fourier error budget."""
     from .analysis import analyze_trial
-    from .localize import _new_output
     from .trial import run_trial
 
     seed, folder = Path(seed).resolve(), Path(symmetry_dir).resolve()
     dft = [] if dft_eigenval is None else ([dft_eigenval] if isinstance(dft_eigenval, (str, Path)) else list(dft_eigenval))
     files = [Path(f'{seed}.{ext}') for ext in ('win', 'amn', 'mmn', 'eig')]
     files += [folder/'bloch.npz', folder/'report.json', *map(Path, dft)]
-    output = _new_output(output_dir, files)
+    output = _new_model_output(output_dir, [seed, *files])
     report = _base_report('sawf-bridge-approximate-model-v1')
     report.update(converged=False, source_seed=str(seed), source_symmetry=str(folder))
     started = time.perf_counter()

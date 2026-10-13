@@ -131,6 +131,70 @@ def test_existing_empty_output_has_no_overwrite_warning(tmp_path, capsys):
     assert not capsys.readouterr().err
 
 
+def test_new_model_output_may_be_a_child_of_the_calculation_directory(tmp_path):
+    from vasp_sawf.approximate import _new_model_output
+    source = tmp_path/'calculation'
+    source.mkdir()
+    protected = source/'wannier90.win'
+    protected.write_bytes(b'original WIN')
+    output = _new_model_output(source/'sawf', [protected])
+    assert output == source/'sawf' and output.is_dir()
+    assert protected.read_bytes() == b'original WIN'
+
+
+def test_new_model_output_may_be_a_sibling_of_the_calculation_directory(tmp_path):
+    from vasp_sawf.approximate import _new_model_output
+    source = tmp_path/'calculation'
+    source.mkdir()
+    protected = source/'wannier90.win'
+    protected.write_bytes(b'original WIN')
+    assert _new_model_output(tmp_path/'sawf', [protected]).is_dir()
+    assert protected.read_bytes() == b'original WIN'
+
+
+@pytest.mark.parametrize('kind', ['existing_calculation', 'existing_result', 'input_file',
+    'input_child', 'missing_input', 'missing_input_child', 'symlink', 'dangling_symlink'])
+def test_new_model_output_rejects_aliases_and_nonnew_paths(tmp_path, kind):
+    from vasp_sawf.approximate import _new_model_output
+    source = tmp_path/'calculation'
+    source.mkdir()
+    protected = source/'wannier90.win'
+    protected.write_bytes(b'original WIN')
+    missing = source/'wannier90.eig'
+    output = source/'sawf'
+    if kind == 'existing_calculation':
+        output = source
+    elif kind == 'existing_result':
+        output.mkdir()
+        (output/'keep.txt').write_text('keep')
+    elif kind == 'input_file':
+        output = protected
+    elif kind == 'input_child':
+        output = protected/'result'
+    elif kind == 'missing_input':
+        output = missing
+    elif kind == 'missing_input_child':
+        output = missing/'result'
+    elif kind == 'symlink':
+        output.symlink_to(source, target_is_directory=True)
+    else:
+        output.symlink_to(tmp_path/'nonexistent', target_is_directory=True)
+    with pytest.raises(ValueError, match='Output|output'):
+        _new_model_output(output, [protected, missing])
+    assert protected.read_bytes() == b'original WIN'
+    assert not missing.exists()
+    if kind == 'existing_result':
+        assert (output/'keep.txt').read_text() == 'keep'
+
+
+def test_new_model_output_rejects_missing_ancestor_of_future_input(tmp_path):
+    from vasp_sawf.approximate import _new_model_output
+    output = tmp_path/'future_calculation'
+    with pytest.raises(ValueError, match='Output|output'):
+        _new_model_output(output, [output/'wannier90.win'])
+    assert not output.exists()
+
+
 @pytest.mark.skipif(not os.environ.get('SAWF_APPROXIMATE_SEED'), reason='Real reviewed inputs are optional')
 def test_real_reviewed_diagnostic_package_and_tamper(tmp_path):
     from vasp_sawf.approximate import export_approximate, _read_package

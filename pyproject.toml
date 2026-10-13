@@ -44,4 +44,4 @@ packages = ["vasp_sawf"]
 include-package-data = false
 
 [tool.setuptools.package-data]
-vasp_sawf = ["accepted_closure.json"]
+vasp_sawf = ["accepted_closure.json", "accepted_approximate.json"]

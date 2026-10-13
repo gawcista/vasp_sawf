@@ -24,11 +24,12 @@ def test_installed_command_help_outside_checkout(command, tmp_path):
     assert '--output' in result.stdout
 
 
-def test_installed_package_contains_acceptance_record(tmp_path):
+@pytest.mark.parametrize('filename', ['accepted_closure.json', 'accepted_approximate.json'])
+def test_installed_package_contains_acceptance_record(tmp_path, filename):
     result = subprocess.run([
         sys.executable, '-I', '-c',
         'import json; from importlib.resources import files; '
-        'record = json.loads(files("vasp_sawf").joinpath("accepted_closure.json").read_text()); '
+        f'record = json.loads(files("vasp_sawf").joinpath({filename!r}).read_text()); '
         'assert record; print("acceptance record available")',
     ], cwd=tmp_path, capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr

@@ -1,0 +1,118 @@
+{
+  "schema": "sawf-reviewed-approximate-v1",
+  "decisions": [
+    {
+      "id": "tsns-none-approximate-20261013",
+      "date": "2026-10-13",
+      "approved_by": "The user explicitly accepted the measured MMN and model symmetry residuals and requested enabling and running this approximate workflow on ADA.",
+      "scope": "Single-particle analysis of the bound ALGO=None eight-band tSnS dataset. Acceptance does not certify complete source coefficient closure, exact symmetry, or DFT interpolation accuracy.",
+      "diagnostic_sha256": "0c28cef95562428e654183352bd24bbd9bff1a20510a529a01a1cd306e1d8338",
+      "source_hashes": {
+        "win": "de5cccdfa2397e3695336f22d8ff19f69db63441cc1df0d55292b5260bd78e1b",
+        "amn": "83dea7bbd1a6aeb6f44b8645d2c80b6a7e2a6e825adb5fbd1cd76b806e879504",
+        "eig": "c9dfd56e25d4ad8d6a2d97f71b4b36ffdd48ae9136657d38c83b2526497ee8ae",
+        "mmn": "9ef2b331e7a0ba55a8c0dc2d53e34d2ddc2be0802b8a59b7f4969ee4367c0bf1"
+      },
+      "target": {
+        "orbits": [
+          {
+            "position_fractional": [
+              0.741850452829675,
+              0.7360933822227451,
+              0.1679410695036629
+            ],
+            "orbital": "s",
+            "expanded_positions_fractional": [
+              [
+                0.741850452829675,
+                0.7360933822227451,
+                0.1679410695036629
+              ],
+              [
+                0.258149547170325,
+                0.23609338222274512,
+                0.1692156235038738
+              ]
+            ]
+          },
+          {
+            "position_fractional": [
+              0.24985348606314414,
+              0.6996231291026112,
+              0.1680181513884988
+            ],
+            "orbital": "s",
+            "expanded_positions_fractional": [
+              [
+                0.24985348606314414,
+                0.6996231291026112,
+                0.1680181513884988
+              ],
+              [
+                0.7501465139368558,
+                0.19962312910261115,
+                0.1691385416190379
+              ]
+            ]
+          }
+        ],
+        "column_centers_fractional": [
+          [
+            0.741850452829675,
+            0.7360933822227451,
+            0.1679410695036629
+          ],
+          [
+            0.741850452829675,
+            0.7360933822227451,
+            0.1679410695036629
+          ],
+          [
+            0.258149547170325,
+            0.23609338222274512,
+            0.1692156235038738
+          ],
+          [
+            0.258149547170325,
+            0.23609338222274512,
+            0.1692156235038738
+          ],
+          [
+            0.24985348606314414,
+            0.6996231291026112,
+            0.1680181513884988
+          ],
+          [
+            0.24985348606314414,
+            0.6996231291026112,
+            0.1680181513884988
+          ],
+          [
+            0.7501465139368558,
+            0.19962312910261115,
+            0.1691385416190379
+          ],
+          [
+            0.7501465139368558,
+            0.19962312910261115,
+            0.1691385416190379
+          ]
+        ],
+        "basis_convention": "Input orbit order, then WannierBerri orbital block, orbit position, real orbital, interlaced spin",
+        "center_constraint": "Affine center covariance under the declared site permutations and integer cell shifts; symmetry-allowed coordinates may relax",
+        "basis_role": "User-supplied center orbits and local matrix representations; orbital labels alone do not establish atomic orbital character"
+      },
+      "action_method": "Gamma native-MMN transport followed by exact Seitz-group reconstruction; no multi-anchor fit",
+      "hamiltonian_budget_ev": 0.0001,
+      "active_axes": [
+        0,
+        1
+      ],
+      "operation_count": 4,
+      "reference_mmn_entry_max": 0.00048157501330743917,
+      "reference_hamiltonian_uniform_upper_ev": 9.3403958873e-05,
+      "coefficient_scope": "All stored source k-point little groups; generic cross-k source closure remains uncertified.",
+      "target_cell_convention": "Ordered orbit representatives may differ by integer lattice translations; full target and gauge cell phases must be recomputed."
+    }
+  ]
+}

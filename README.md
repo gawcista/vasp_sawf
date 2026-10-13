@@ -50,6 +50,62 @@ Before MMN transport, `report.json` records the raw Gamma symmetry matrices (rea
 
 The normal extraction outputs `bloch.npz` and `report.json` form one bound bundle. Download both along with the unchanged original WIN/AMN/MMN/EIG for localization.
 
+### Explicitly accepted approximate inputs
+
+Some reviewed datasets have small native symmetry inconsistencies that exceed
+the strict matrix checks but fit a specified model energy budget. They may
+use a separate, explicitly accepted approximate route. This does not change
+the strict defaults or claim exact input symmetry.
+
+For the reviewed tSnS ALGO=None data, reuse the completed all-24-point
+diagnostic in the original calculation directory:
+
+```bash
+sawf-extract --from-diagnostic symmetry_full --accept-approximate
+
+sawf-run --seed wannier90 --symmetry symmetry \
+  --center 0.741850452829675 0.7360933822227451 0.1679410695036629 --orbital s \
+  --center 0.24985348606314414 0.6996231291026112 0.1680181513884988 --orbital s \
+  --output sawf
+```
+
+The first command creates or updates `symmetry/{bloch.npz,report.json}`.
+It reads the completed diagnostic and the small original interface files;
+it does not open WAVECAR or require OUTCAR to remain available. The recorded
+approval binds the exact original WIN/AMN/MMN/EIG and diagnostic evidence.
+It is not a general permission to accept arbitrary residuals or other inputs.
+The local `s` label specifies the approved local spinor representation;
+it does not assign an atomic s-orbital character to these Wannier functions.
+Integer-cell equivalents of the approved centers retain periodic phases.
+
+The second command automatically recognizes the approximate package and
+localizes from the original SCDM AMN with the approved target. It writes
+`model.npz`, `bands.npz`, and `summary.json`; the model includes the final
+gauge and Fourier Hamiltonian. Download that result directory together with
+the two symmetry-package files for local analysis. No new `--trial` flag is
+needed. Existing trial files keep their historical status.
+
+The reports explicitly record `accepted_approximate`, the approval scope,
+raw and reconstructed action residuals, and failure of the strict reference
+checks. Algebraic group relations, antiunitary conjugation, target
+compatibility, gauge unitarity/covariance, convergence and unchanged inputs
+remain checked. The final model is accepted only if its continuous Fourier
+symmetry bound meets the approved **1e-4 eV (0.1 meV)** budget. There is no
+Hamiltonian averaging or change to original energies or overlaps.
+
+Acceptance concerns the approximate single-particle model. It does not
+certify full source-wavefunction closure in the PAW metric, exact DFT
+symmetry, or interpolation accuracy against a matched-settings DFT path.
+The experimental multi-anchor fit is not used by this route.
+
+On ADA, these two commands need only the small-matrix stage. A single task
+and CPU with 8 GiB memory is a conservative allocation for the reviewed
+eight-band case; the large WAVECAR-extraction worker/memory settings do not
+apply. Use an available compute allocation, for example a batch script with
+`--ntasks=1 --cpus-per-task=1 --mem=8G`, and set BLAS/OpenMP threads to one.
+The second command requires a new output directory; preserve a prior model
+or deliberately remove only its generated outputs before repeating it.
+
 For focused diagnosis of failed covariance checks, use the same seed, WAVECAR and OUTCAR. For example, run these selected tSnS points within an existing Slurm allocation:
 
 ```bash

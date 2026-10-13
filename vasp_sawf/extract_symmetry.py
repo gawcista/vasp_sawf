@@ -19,7 +19,15 @@ def main():
     parser.add_argument('--energy-tol', type=float, default=1e-8, help='Absolute WAVECAR/EIG energy tolerance in eV; does not change energy covariance or other symmetry/localization tolerances')
     parser.add_argument('--diagnose-kpoints', nargs='+', type=int, default=None, metavar='K',
                         help='Diagnose selected 1-based stored WAVECAR k points, adding Gamma automatically; write diagnostic.json only, without a SAWF-ready export')
+    parser.add_argument('--from-diagnostic', type=Path, metavar='DIRECTORY',
+                        help='Reuse a completed, reviewed diagnostic without reading WAVECAR; requires --accept-approximate')
+    parser.add_argument('--accept-approximate', action='store_true',
+                        help='Apply a recorded, input-bound approval for approximate symmetry; strict checks remain unchanged')
     args = parser.parse_args()
+    if args.accept_approximate != (args.from_diagnostic is not None):
+        parser.error('--from-diagnostic and --accept-approximate must be supplied together')
+    if args.from_diagnostic is not None and args.diagnose_kpoints is not None:
+        parser.error('--from-diagnostic cannot be combined with --diagnose-kpoints')
     for name in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'NUMBA_NUM_THREADS'):
         os.environ[name] = '1'
     cache_root = Path(os.environ.get('XDG_CACHE_HOME', ''))
@@ -29,11 +37,15 @@ def main():
     os.environ.setdefault('NUMBA_CACHE_DIR', str(cache_root / 'numba'))
     os.environ.setdefault('MPLCONFIGDIR', str(cache_root / 'matplotlib'))
     sys.dont_write_bytecode = True
-    from vasp_sawf.symmetry import export_symmetry
     try:
-        report = export_symmetry(args.seed, args.wavecar, args.outcar, args.output,
-                                 workers=args.workers, memory_gb=args.memory_gb, spin_channel=args.spin_channel,
-                                 tol=args.tol, energy_tol=args.energy_tol, diagnose_kpoints=args.diagnose_kpoints)
+        if args.from_diagnostic is not None:
+            from vasp_sawf.approximate import export_approximate
+            report = export_approximate(args.seed, args.from_diagnostic, args.output)
+        else:
+            from vasp_sawf.symmetry import export_symmetry
+            report = export_symmetry(args.seed, args.wavecar, args.outcar, args.output,
+                                     workers=args.workers, memory_gb=args.memory_gb, spin_channel=args.spin_channel,
+                                     tol=args.tol, energy_tol=args.energy_tol, diagnose_kpoints=args.diagnose_kpoints)
     except (ValueError, OSError, RuntimeError) as error:
         print(f'Symmetry extraction failed: {error}', file=sys.stderr)
         return 1

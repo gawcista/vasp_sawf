@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Localize original SCDM inputs or analyze a saved numerical trial without WAVECAR."""
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -40,11 +41,20 @@ def main():
         parser.error('--points-per-segment requires --analyze-trial')
     if args.dft_eigenval is not None and len(args.dft_eigenval) != 1:
         parser.error('Split DFT files are supported only with --analyze-trial')
-    if args.trial:
-        from vasp_sawf.trial import run_trial as run_sawf
-    else:
-        from vasp_sawf.localize import run_sawf
+    approximate = False
     try:
+        if args.trial:
+            from vasp_sawf.trial import run_trial as run_sawf
+        else:
+            package_report = args.symmetry / 'report.json'
+            if package_report.is_file():
+                metadata = json.loads(package_report.read_text())
+                approximate = (isinstance(metadata, dict)
+                               and metadata.get('schema') == 'sawf-bridge-approximate-bloch-v1')
+            if approximate:
+                from vasp_sawf.approximate import run_approximate as run_sawf
+            else:
+                from vasp_sawf.localize import run_sawf
         report = run_sawf(args.seed, args.symmetry, args.output,
                           center=args.center, orbital=args.orbital, num_iter=1000 if args.num_iter is None else args.num_iter,
                           dft_eigenval=args.dft_eigenval[0] if args.dft_eigenval else None,
@@ -52,7 +62,7 @@ def main():
     except (ValueError, OSError, RuntimeError) as error:
         print(f'SAWF failed: {error}', file=sys.stderr)
         return 1
-    label = 'Numerical trial (not accepted)' if args.trial else 'Model'
+    label = 'Numerical trial (not accepted)' if args.trial else ('Accepted approximate model' if approximate else 'Model')
     print(f"{label}: {args.output.resolve()}; status: {report['status']}; converged: {report['converged']}")
     return 0
 

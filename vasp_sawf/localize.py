@@ -196,9 +196,9 @@ def _target_representation(sym, centers, orbitals):
     return blocks, positions, descriptor
 
 
-def _resolve_target(seed, ordinary_centers, lattice, spacegroup, center, orbital, *, center_tol=.01):
+def _resolve_target(ordinary_centers, lattice, spacegroup, center, orbital, *, center_tol=.01):
     """Infer a local target from current centers, or preserve an explicit representation."""
-    from .targets import infer_target, read_wout_centers
+    from .targets import infer_target
 
     if not np.isfinite(center_tol) or center_tol <= 0:
         raise ValueError('Center matching tolerance must be positive and finite')
@@ -209,29 +209,9 @@ def _resolve_target(seed, ordinary_centers, lattice, spacegroup, center, orbital
         return centers, orbitals, dict(source='explicit_target')
     centers = np.asarray(ordinary_centers)
     source = dict(source='current_original_amn_localization', center_tolerance_angstrom=center_tol)
-    wout = Path(f'{seed}.wout')
-    if wout.exists():
-        content = wout.read_bytes()
-        imported = read_wout_centers(wout, len(centers))
-        _, _, distance = _match_center_columns(centers, imported, lattice)
-        if distance > center_tol:
-            raise ValueError(f'WOUT centers disagree with current original-AMN localization by {distance} angstrom; '
-                             'check the matching WOUT or supply an explicit target')
-        if wout.read_bytes() != content:
-            raise ValueError('WOUT changed while reading target centers')
-        centers = imported
-        source.update(source='wannier90.wout', source_path=str(wout.resolve()),
-                      source_sha256=hashlib.sha256(content).hexdigest(),
-                      ordinary_center_match_max_angstrom=distance)
     representatives, orbitals, inference = infer_target(centers, lattice, spacegroup, center_tol=center_tol)
     source['inference'] = inference
     return representatives, orbitals, source
-
-
-def _verify_target_source(source):
-    if source.get('source') == 'wannier90.wout':
-        if hashlib.sha256(Path(source['source_path']).read_bytes()).hexdigest() != source['source_sha256']:
-            raise ValueError('Target WOUT changed during localization')
 
 
 def _target_matrix(blocks, kpoint, image, operation):
@@ -839,7 +819,7 @@ def _run_sawf(seed, symmetry_dir, output, report, num_iter,
     data, _ = load_wannier_data(seed,source_nb=source_nb)
     ordinary_u, ordinary_centers, ordinary_report = _ordinary_initial_gauge(data,num_iter=num_iter)
     center, orbital, target_source = _resolve_target(
-        seed, ordinary_centers, bundle.lattice, sg, center, orbital, center_tol=center_tol)
+        ordinary_centers, bundle.lattice, sg, center, orbital, center_tol=center_tol)
     target_blocks, target_centers, target_report = _target_representation(sym, center, orbital)
     target_report['selection'] = target_source
     if sym.num_wann != nb:
@@ -870,7 +850,6 @@ def _run_sawf(seed, symmetry_dir, output, report, num_iter,
     report['initial_alignment'] = alignment
     report['ordinary_initialization'] = ordinary_report
     report['localisation'] = wannierise_full_mesh(data, sym, D, num_iter=num_iter, initial_gauge=initial)
-    _verify_target_source(target_source)
     u = np.array([data.chk.v_matrix[k] for k in range(sym.NK)])
     cov, hcov = [], []
     hk = u.conj().swapaxes(-1,-2) @ (bundle.eig[:,:,None]*u)

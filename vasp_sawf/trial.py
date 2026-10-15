@@ -221,7 +221,7 @@ def run_trial(seed, symmetry_dir, output_dir, *, center=None, orbital=None, num_
 def _run_trial(seed, folder, output, report, center, orbital, num_iter, center_tol=.01):
     from .inputs import load_wannier_data
     from .localize import (_ordinary_initial_gauge, align_scdm_initial_gauge, _target_representation,
-                           _target_matrix, wannierise_full_mesh, _gate, _resolve_target, _verify_target_source)
+                           _target_matrix, wannierise_full_mesh, _gate, _resolve_target)
     from .representation import reconstruct_representation
     from .symmetry import mmn_translation_phases, transport_sewing, make_symmetrizer, group_residuals
 
@@ -257,7 +257,7 @@ def _run_trial(seed, folder, output, report, center, orbital, num_iter, center_t
     data, _ = load_wannier_data(seed, source_nb=source['source_num_bands'])
     ordinary, centers, ordinary_report = _ordinary_initial_gauge(data, num_iter=num_iter)
     center, orbital, target_source = _resolve_target(
-        seed, centers, bundle.lattice, group, center, orbital, center_tol=center_tol)
+        centers, bundle.lattice, group, center, orbital, center_tol=center_tol)
     blocks, positions, target_report = _target_representation(sym, center, orbital)
     target_report['selection'] = target_source
     if sym.num_wann != bundle.eig.shape[-1]:
@@ -276,7 +276,6 @@ def _run_trial(seed, folder, output, report, center, orbital, num_iter, center_t
     alignment['ordinary_provenance'] = 'Unconstrained localization from the bound original AMN in this process'
     report.update(target=target_report, ordinary_initialization=ordinary_report, initial_alignment=alignment)
     report['localisation'] = wannierise_full_mesh(data, sym, target, initial_gauge=initial, num_iter=num_iter)
-    _verify_target_source(target_source)
     u = np.array([data.chk.v_matrix[k] for k in range(sym.NK)])
     gauge_covariance = max(float(abs(corrected[g] @ (u.conj() if anti[g] else u)
                                       - u[kmap[g]] @ target[g]).max()) for g in range(group.size))

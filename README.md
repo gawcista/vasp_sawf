@@ -76,8 +76,8 @@ the existing streamed reader and automatic worker/memory limits. It generates
 package files are replaced with a warning; unrelated files are preserved.
 The source diagnostic is embedded in the package, so local SAWF needs only
 `bloch.npz`, `report.json`, and the original small WIN/AMN/MMN/EIG files.
-Include the matching WOUT to reuse its centers. No WAVECAR or UNK is needed
-for localization.
+No WAVECAR, WOUT, CHK, or UNK is needed for localization. Candidate centers
+are computed from the current original SCDM AMN with WannierBerri.
 
 The package binds the newly measured evidence and supplied budgets to the
 current input hashes. It records raw and reconstructed actions, independent
@@ -170,12 +170,13 @@ These separate-channel models do not enforce operations that exchange the up/dow
 ## Symmetry-adapted localization
 
 Omit `--center` and `--orbital` to infer a candidate target from ordinary
-Wannier centers. The program localizes the current original SCDM AMN in memory.
-If `seed.wout` exists, it reads its final centers and checks their periodic
-Cartesian agreement with the fresh ordinary centers; otherwise it uses the
-fresh centers directly. WOUT byte hashes and the center source are recorded.
-No previously saved gauge, material-specific coordinate or target registry is
-used by automatic selection.
+Wannier centers. The program localizes the current original SCDM AMN with
+WannierBerri in memory and uses those freshly computed centers. The input
+matrix hashes, ordinary localization convergence, and center source are
+recorded. Automatic selection does not read `seed.wout` or a previously saved
+gauge. VASP's Wannier90 library setup can leave a WOUT without final centers;
+that file is independent of this workflow. No material-specific coordinate
+or target registry is used by automatic selection.
 
 The automatic case is a general-position spatial orbit with one local scalar
 state, or one Kramers doublet for SOC, per center. Pairing and orbit matching

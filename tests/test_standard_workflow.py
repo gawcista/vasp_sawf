@@ -11,16 +11,19 @@ import pytest
 
 @pytest.mark.real_data
 @pytest.mark.skipif(not os.environ.get('SAWF_STANDARD_FULL'), reason='Full compact-data regression is opt-in')
-@pytest.mark.parametrize('with_wout', [True, False])
-def test_new_input_prefix_and_hashes_auto_target_end_to_end(tmp_path, monkeypatch, with_wout):
+@pytest.mark.parametrize('wout_kind', ['final', 'absent', 'setup'])
+def test_new_input_prefix_and_hashes_auto_target_end_to_end(tmp_path, monkeypatch, wout_kind):
     import vasp_sawf.approximate as approximate
 
     source = Path(os.environ['SAWF_APPROXIMATE_SEED'])
     diagnostic = Path(os.environ['SAWF_APPROXIMATE_DIAGNOSTIC'])
     seed = tmp_path/'fresh_input'
-    extensions = ('win', 'mmn', 'amn', 'eig', 'wout') if with_wout else ('win', 'mmn', 'amn', 'eig')
+    extensions = ('win', 'mmn', 'amn', 'eig', 'wout') if wout_kind == 'final' else ('win', 'mmn', 'amn', 'eig')
     for extension in extensions:
         Path(f'{seed}.{extension}').write_bytes(Path(f'{source}.{extension}').read_bytes())
+    if wout_kind == 'setup':
+        Path(f'{seed}.wout').write_text('Wannier90 is running in LIBRARY MODE\n'
+                                      'Finished setting up k-point neighbours.\n')
     with Path(f'{seed}.win').open('a') as handle:
         handle.write('\n! Independent input prefix for automatic workflow regression\n')
     hashes = {extension: hashlib.sha256(Path(f'{seed}.{extension}').read_bytes()).hexdigest()
@@ -39,7 +42,7 @@ def test_new_input_prefix_and_hashes_auto_target_end_to_end(tmp_path, monkeypatc
     assert package['accepted'] and model['accepted'] and model['converged']
     assert model['source_hashes'] == hashes
     selection = model['target']['selection']
-    assert selection['source'] == ('wannier90.wout' if with_wout else 'current_original_amn_localization')
+    assert selection['source'] == 'current_original_amn_localization'
     assert selection['inference']['local_representation'] == 'local_kramers_doublet'
     assert selection['inference']['atomic_orbital_assignment'] is False
     assert selection['inference']['orbit_site_counts'] == [2, 2]

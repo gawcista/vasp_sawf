@@ -1,6 +1,5 @@
 """Automatic targets use current interface results rather than material presets."""
 
-import hashlib
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -23,42 +22,43 @@ def _write_wout(path, centers):
     path.write_text(text)
 
 
-def test_auto_target_reads_matching_wout_and_records_its_hash(tmp_path):
+@pytest.mark.parametrize('wout_kind', ['absent', 'setup', 'partial', 'matching', 'shifted', 'unrelated', 'directory'])
+def test_auto_target_uses_current_amn_centers_regardless_of_wout(tmp_path, monkeypatch, wout_kind):
     from vasp_sawf.localize import _resolve_target
     group, centers = _centers()
     path = tmp_path/'wannier90.wout'
-    _write_wout(path, centers[[2, 0, 3, 1]])
-    before = path.read_bytes()
+    if wout_kind == 'setup':
+        path.write_text('Wannier90 is running in LIBRARY MODE\n'
+                        'Finished setting up k-point neighbours.\n'
+                        'Exiting wannier_setup in wannier90\n')
+    elif wout_kind == 'partial':
+        _write_wout(path, centers[:1])
+    elif wout_kind == 'matching':
+        _write_wout(path, centers[[2, 0, 3, 1]])
+    elif wout_kind == 'shifted':
+        _write_wout(path, centers + [0., .001, 0.])
+    elif wout_kind == 'unrelated':
+        _write_wout(path, centers + [.2, 0., 0.])
+    elif wout_kind == 'directory':
+        path.mkdir()
+    before = path.read_bytes() if path.is_file() else None
+    monkeypatch.chdir(tmp_path)
     positions, orbitals, report = _resolve_target(
-        tmp_path/'wannier90', centers, group.lattice, group, None, None, center_tol=.01)
-    assert len(positions) == 1 and orbitals == ['s']
-    assert report['source'] == 'wannier90.wout'
-    assert report['source_sha256'] == hashlib.sha256(before).hexdigest()
-    assert report['ordinary_center_match_max_angstrom'] < 1e-8
-    assert path.read_bytes() == before
-
-
-def test_auto_target_without_wout_uses_fresh_original_amn_centers(tmp_path):
-    from vasp_sawf.localize import _resolve_target
-    group, centers = _centers()
-    _, _, report = _resolve_target(tmp_path/'wannier90', centers, group.lattice, group,
-                                  None, None, center_tol=.01)
+        centers, group.lattice, group, None, None, center_tol=.01)
+    np.testing.assert_allclose(positions, [[.2, .17, .3]], atol=1e-12)
+    assert orbitals == ['s']
     assert report['source'] == 'current_original_amn_localization'
-
-
-def test_auto_target_rejects_wout_inconsistent_with_current_amn(tmp_path):
-    from vasp_sawf.localize import _resolve_target
-    group, centers = _centers()
-    _write_wout(tmp_path/'wannier90.wout', centers + [.2, 0., 0.])
-    with pytest.raises(ValueError, match='WOUT.*current|current.*WOUT'):
-        _resolve_target(tmp_path/'wannier90', centers, group.lattice, group, None, None, center_tol=.01)
+    if before is not None:
+        assert path.read_bytes() == before
+    else:
+        assert path.is_dir() if wout_kind == 'directory' else not path.exists()
 
 
 def test_manual_target_does_not_require_or_read_wout(tmp_path):
     from vasp_sawf.localize import _resolve_target
     group, centers = _centers()
     (tmp_path/'wannier90.wout').write_text('Not a Wannier result')
-    p, orbital, report = _resolve_target(tmp_path/'wannier90', centers, group.lattice, group,
+    p, orbital, report = _resolve_target(centers, group.lattice, group,
                                        [.2, .17, .3], 's', center_tol=.01)
     np.testing.assert_array_equal(p, [[.2, .17, .3]])
     assert orbital == ['s'] and report['source'] == 'explicit_target'

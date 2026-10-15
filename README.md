@@ -274,6 +274,51 @@ energies_eV = np.linalg.eigvalsh(H_k)
 
 Do not divide `H_R` by degeneracies again. Energies remain on the original EIG reference; a plotting reference is subtracted only when drawing figures.
 
+### Analyzing a saved approximate model
+
+Use the completed model from an approximate run for subsequent local analysis:
+
+```bash
+sawf-run --analyze-model /path/to/sawf_standard \
+  --seed /path/to/interface/wannier90 \
+  --output /path/to/analysis --points-per-segment 201 \
+  --dft-eigenval /path/to/EIGENVAL.0 /path/to/EIGENVAL.1 \
+  --energy-reference-ev VALUE
+sawf-plot-bands /path/to/analysis/bands.npz --output /path/to/figures
+sawf-plot-bands /path/to/analysis/dft_bands.npz --output /path/to/reference_figures
+sawf-plot-symmetry /path/to/analysis/comparison.json --output /path/to/figures
+```
+
+The DFT files and energy-reference option are optional. `--seed` relocates the
+original WIN/AMN/MMN/EIG after downloading a model; their hashes must match.
+Keep `model.npz` and its enclosing `summary.json` together. The command checks
+the model hash, accepted-approximate status, embedded trial evidence, original
+interface binding and saved gauge constraints. It revalidates the complete source
+policy and matrix budgets, including the target binding for reviewed decisions.
+It rebuilds Fourier coefficients
+only to check the archive, then evaluates the saved coefficients themselves.
+Both ordinary Wannier and SAWF gauges are reused without repeating either
+localization or reading WAVECAR. The source acceptance scope and Hamiltonian
+budget remain attached to the analysis; strict source certification is unchanged.
+
+The output contains the same bands, centers, spreads, locality, antiunitary
+pairing, DFT comparison and continuous SAWF symmetry bounds as trial analysis.
+It also writes `comparison.json`, with the actual Seitz operations and per-operation
+ordinary-Wannier/SAWF gauge and Hamiltonian residuals. Ordinary Wannier columns,
+integer cell representatives and one constant unitary matrix are aligned to the
+saved target. This reversible change is derived from the saved ordinary gauge
+and centers. Its Fourier coefficients retain the original off-grid spectrum;
+the alignment ledger and inverse/spectrum checks are recorded. Gauge residuals
+cover every original mesh point; Hamiltonian and spectrum comparisons cover the
+reported finite path, grid and random samples.
+
+DFT comparisons retain the original absolute energies and a common plotting
+reference. When the supplied path includes Gamma, `gamma_upper_band_alignment`
+additionally reports discrepancies after aligning the highest selected band at
+the first Gamma record. Its recorded shift is added to the model energies only
+for this comparison; saved energies and Hamiltonians remain unchanged. This
+upper-band reference does not identify a material's valence-band maximum.
+
 ### Interpreting symmetry errors
 
 Let `E(k)` be the original diagonal eigenvalue matrix, `B_g(k)` the unitary Bloch sewing matrix, and `D_g(k)` the target Wannier representation. Sewing matrices describe how symmetry maps the Bloch basis between k points. If `B_g C_g(U)=U(gk) D_g`, then for `H=U† E U`,

@@ -341,18 +341,43 @@ def analyze_trial(trial_dir, output_dir, *, seed=None, points_per_segment=101,
     return report
 
 
-def _analyze(folder, seed, output, report, points_per_segment, reference, dft_files):
+def _analyze(folder, seed, output, report, points_per_segment, reference, dft_files,
+             *, saved_model=None, ordinary_report=None):
     from .inputs import load_wannier_data
     from .localize import _gate, _ordinary_initial_gauge, _target_matrix
 
     bundle, saved, spin, group, blocks, sym = _load_trial(folder, seed, report)
     data, _ = load_wannier_data(seed, source_nb=report['source_num_bands'])
-    ordinary, _, ordinary_report = _ordinary_initial_gauge(data)
+    if saved_model is None:
+        ordinary, _, ordinary_report = _ordinary_initial_gauge(data)
+    else:
+        for key, value in saved.items():
+            if key not in saved_model or not np.array_equal(value, saved_model[key]):
+                raise ValueError(f'Saved model disagrees with validated embedded trial: {key}')
+        required = ('ordinary_U', 'R', 'H_R', 'ordinary_R', 'ordinary_H_R',
+                    'ordinary_centers_angstrom', 'ordinary_spreads_angstrom2')
+        if any(key not in saved_model for key in required):
+            raise ValueError('Saved model is missing ordinary gauge or Fourier analysis arrays')
+        ordinary = saved_model['ordinary_U']
+        if ordinary.shape != saved['U'].shape or not np.isfinite(ordinary).all():
+            raise ValueError('Invalid saved ordinary gauge shape or values')
+        _gate(report, 'saved_ordinary_unitarity_max', abs(_adjoint(ordinary)@ordinary-np.eye(ordinary.shape[-1])).max(),
+              256*np.finfo(float).eps*ordinary.shape[-1])
+        if not isinstance(ordinary_report, dict) or ordinary_report.get('converged') is not True:
+            raise ValueError('Saved ordinary localization lacks convergence evidence')
     ordinary_system, ordinary_centers, ordinary_spreads = _system(data, ordinary, spin['spinor'])
     data, _ = load_wannier_data(seed, source_nb=report['source_num_bands'])
     system, centers, spreads = _system(data, saved['U'], spin['spinor'])
     _gate(report, 'centers_recompute_max_angstrom', abs(centers-saved['centers_angstrom']).max())
     _gate(report, 'spreads_recompute_max_angstrom2', abs(spreads-saved['spreads_angstrom2']).max())
+    if saved_model is not None:
+        from .model_analysis import _check_saved_system
+        ordinary_system = _check_saved_system(saved_model, ordinary_system, ordinary_centers, ordinary_spreads,
+                                              'ordinary_', report)
+        system = _check_saved_system(saved_model, system, centers, spreads, '', report)
+        ordinary_centers, ordinary_spreads = (saved_model['ordinary_centers_angstrom'],
+                                              saved_model['ordinary_spreads_angstrom2'])
+        centers, spreads = saved['centers_angstrom'], saved['spreads_angstrom2']
     report.update(ordinary_localization=ordinary_report, centers_angstrom=centers.tolist(), spreads_angstrom2=spreads.tolist(),
         total_spread_angstrom2=float(spreads.sum()), ordinary_centers_angstrom=ordinary_centers.tolist(),
         ordinary_spreads_angstrom2=ordinary_spreads.tolist(),
@@ -420,6 +445,26 @@ def _analyze(folder, seed, output, report, points_per_segment, reference, dft_fi
         report['dft_comparison'] = {key: _difference(dft[key]-np.sort(dft['dft'], axis=1)) for key in systems}
         report['dft_reference_role'] = 'comparison_only_not_same_settings_validation'
         report['dft_reference_files'] = [str(path) for path in dft_files]
+        gamma = np.flatnonzero(np.max(abs(dft_points-np.rint(dft_points)), axis=1) <= 1e-8)
+        if len(gamma):
+            first = int(gamma[0])
+            dft_reference = float(dft['dft'][first, -1])
+            alignment = dict(gamma_kpoint_indices_0based=gamma.tolist(), reference_index_0based=first,
+                band_vasp_1based=int(bundle.bands_vasp_1based[-1]), dft_reference_ev=dft_reference,
+                definition='Align the highest selected band at the first Gamma record; shift_ev is added to model energies for comparison only; original arrays and Hamiltonians are unchanged',
+                models={})
+            for key in systems:
+                model_reference = float(dft[key][first, -1])
+                shift = dft_reference-model_reference
+                alignment['models'][key] = dict(model_reference_ev=model_reference, shift_ev=shift,
+                    **_difference(dft[key]+shift-np.sort(dft['dft'], axis=1)))
+            report['gamma_upper_band_alignment'] = alignment
     _fourier_bounds(system, group, blocks, active, values, report)
+    if saved_model is not None:
+        from .model_analysis import _comparison
+        comparison = _comparison(bundle, saved_model, ordinary, ordinary_centers, ordinary_system,
+                                 system, group, sym, target, sets)
+        comparison.update(source_model=report['source_model'], source_acceptance=report['source_acceptance'])
+        (output/'comparison.json').write_text(json.dumps(comparison, indent=2, allow_nan=False)+'\n')
     _save(output / 'analysis.npz', values)
     _save(output / 'bands.npz', bands)

@@ -40,15 +40,81 @@ FOOTER = (
 )
 
 
+def _operation_label(operation):
+    rotation = np.asarray(operation['rotation'])
+    translation = np.asarray(operation['translation'])
+    if np.array_equal(rotation, np.eye(3)):
+        label = 'E'
+    elif np.array_equal(rotation, -np.eye(3)):
+        label = 'P'
+    else:
+        label = f"g_{{{operation['index']}}}"
+        for i, axis in enumerate('xyz'):
+            diagonal = -np.ones(3)
+            diagonal[i] = 1
+            if np.array_equal(rotation, np.diag(diagonal)):
+                label = f'C_{{2{axis}}}'
+    if not np.allclose(translation, 0, rtol=0, atol=1e-12):
+        label = r'\{' + label + r'|\mathbf{t}\}'
+    if operation['antiunitary']:
+        label = r'\Theta' if label == 'E' else label + r'\Theta'
+    return '$' + label + '$'
+
+
+def _plot_model_comparison(data, output_dir):
+    operations = data['operations']
+    indices = [i for i, op in enumerate(operations)
+               if op['antiunitary'] or not np.array_equal(op['rotation'], np.eye(3))
+               or not np.allclose(op['translation'], 0, rtol=0, atol=1e-12)]
+    if not indices:
+        indices = list(range(len(operations)))
+    positions = np.arange(len(indices))
+    labels = [_operation_label(operations[i]) for i in indices]
+    figure, axes = plt.subplots(1, 2, figsize=FIGSIZE)
+    fields = ('gauge_entry_max', 'hamiltonian_spectral_max_ev')
+    for panel, (axis, field) in enumerate(zip(axes, fields, strict=True)):
+        positive = []
+        for j, model in enumerate(('ordinary_aligned', 'sawf')):
+            values = np.asarray(data['metrics'][model][field])[indices] * (1000 if panel else 1)
+            positive.extend(values[values > 0])
+            axis.bar(positions + (j-.5)*BAR_OFFSET, values, width=BAR_WIDTH,
+                     color=COLORS[j], label=MODEL_LABELS[j], zorder=3)
+        if positive:
+            axis.set_yscale('log')
+            axis.set_ylim(min(positive)*.2, max(positive)*5)
+        axis.set_xticks(positions, labels)
+        axis.spines[['top', 'right']].set_visible(False)
+        axis.grid(axis='y', which='major', alpha=.2, zorder=0)
+    axes[0].set_title(f"Gauge covariance over {data['nk']} k points")
+    axes[0].set_ylabel('Maximum gauge residual')
+    axes[1].set_title('Interpolated Hamiltonian covariance')
+    axes[1].set_ylabel('Maximum sampled spectral norm (meV)')
+    handles, labels = axes[0].get_legend_handles_labels()
+    figure.legend(handles, labels, loc='upper center', bbox_to_anchor=(.5, .925),
+                  ncol=2, fontsize=10, frameon=False)
+    figure.suptitle('Wannier and SAWF symmetry comparison', fontsize=15, y=.99)
+    figure.text(.5, .035, 'Ordinary Wannier: column, cell and constant unitary basis alignment.',
+                ha='center', fontsize=10)
+    figure.tight_layout(rect=(0, .065, 1, .86), w_pad=2)
+    for extension in FIG_FORMATS:
+        path = output_dir/f'symmetry_comparison.{extension}'
+        figure.savefig(path, dpi=DPI)
+        print(path)
+    plt.close(figure)
+
+
 def plot_symmetry(input_file, output_dir):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    metrics = json.loads(Path(input_file).read_text(encoding="utf-8"))["metrics"]
+    data = json.loads(Path(input_file).read_text(encoding="utf-8"))
     plt.rcParams.update({
         "font.family": FONT_FAMILY,
         "font.size": FONT_SIZE,
         "pdf.fonttype": 42,
     })
+    if data.get('schema') == 'sawf-model-comparison-v1':
+        return _plot_model_comparison(data, output_dir)
+    metrics = data['metrics']
     figure, axes = plt.subplots(1, 2, figsize=FIGSIZE)
     positions = np.arange(len(OPERATIONS))
     fields = (("selected_operations", "gauge"), ("nearest_hopping_relations", "max_abs_eV"))

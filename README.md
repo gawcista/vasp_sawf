@@ -50,61 +50,69 @@ Before MMN transport, `report.json` records the raw Gamma symmetry matrices (rea
 
 The normal extraction outputs `bloch.npz` and `report.json` form one bound bundle. Download both along with the unchanged original WIN/AMN/MMN/EIG for localization.
 
-### Explicitly accepted approximate inputs
+### Fresh workflow with explicit numerical budgets
 
-Some reviewed datasets have small native symmetry inconsistencies that exceed
-the strict matrix checks but fit a specified model energy budget. They may
-use a separate, explicitly accepted approximate route. This does not change
-the strict defaults or claim exact input symmetry.
-
-For the reviewed tSnS ALGO=None data, reuse the completed all-24-point
-diagnostic in the original calculation directory:
+For inputs with small native symmetry inconsistencies, run both stages from
+scratch using explicit numerical budgets. This route does not need a previous
+symmetry package, diagnostic report, material name, stored target, or acceptance
+registry entry:
 
 ```bash
-sawf-extract --from-diagnostic symmetry_full --accept-approximate
-
-sawf-run --seed wannier90 --symmetry symmetry \
-  --center 0.741850452829675 0.7360933822227451 0.1679410695036629 --orbital s \
-  --center 0.24985348606314414 0.6996231291026112 0.1680181513884988 --orbital s \
-  --output sawf
+sawf-extract --accept-approximate --matrix-tol 1e-3 --hamiltonian-tol 1e-4
+sawf-run --output sawf
 ```
 
-The first command creates or updates `symmetry/{bloch.npz,report.json}`.
-It reads the completed diagnostic and the small original interface files;
-it does not open WAVECAR or require OUTCAR to remain available. The recorded
-approval binds the exact original WIN/AMN/MMN/EIG and diagnostic evidence.
-It is not a general permission to accept arbitrary residuals or other inputs.
-The local `s` label specifies the approved local spinor representation;
-it does not assign an atomic s-orbital character to these Wannier functions.
-Integer-cell equivalents of the approved centers retain periodic phases.
+The numbers above are example user-selected budgets, not universal physical
+criteria. `--matrix-tol` (alias `--mmn-tol`) bounds dimensionless matrix-entry
+residuals: native MMN covariance, action corrections and independent stored-k
+sewing agreement. `--hamiltonian-tol` is in eV and bounds energy covariance and
+the final continuous Fourier Hamiltonian symmetry bound. Neither changes
+algebraic group, antiunitary, gauge, or convergence tolerances. WAVECAR/EIG
+energy agreement has its separate `--energy-tol` option.
 
-The second command automatically recognizes the approximate package and
-localizes from the original SCDM AMN with the approved target. It writes
-`model.npz`, `bands.npz`, and `summary.json`; the model includes the final
-gauge and Fourier Hamiltonian. Download that result directory together with
-the two symmetry-package files for local analysis. No new `--trial` flag is
-needed. Existing trial files keep their historical status.
+Extraction reads selected bands at every stored WAVECAR k point afresh, using
+the existing streamed reader and automatic worker/memory limits. It generates
+`diagnostic.json`, `bloch.npz`, and `report.json` inside `symmetry`. Existing
+package files are replaced with a warning; unrelated files are preserved.
+The source diagnostic is embedded in the package, so local SAWF needs only
+`bloch.npz`, `report.json`, and the original small WIN/AMN/MMN/EIG files.
+Include the matching WOUT to reuse its centers. No WAVECAR or UNK is needed
+for localization.
 
-The reports explicitly record `accepted_approximate`, the approval scope,
-raw and reconstructed action residuals, and failure of the strict reference
-checks. Algebraic group relations, antiunitary conjugation, target
-compatibility, gauge unitarity/covariance, convergence and unchanged inputs
-remain checked. The final model is accepted only if its continuous Fourier
-symmetry bound meets the approved **1e-4 eV (0.1 meV)** budget. There is no
-Hamiltonian averaging or change to original energies or overlaps.
+The package binds the newly measured evidence and supplied budgets to the
+current input hashes. It records raw and reconstructed actions, independent
+little-group comparisons, and coefficient closure. The approximation does
+not certify full cross-k source-wavefunction closure or PAW-metric closure;
+coefficient closure remains a separately reported quantity. Exact group
+relations and full-grid gauge covariance remain mandatory. No bands are
+removed and no Hamiltonian or original input matrix is averaged.
 
-Acceptance concerns the approximate single-particle model. It does not
-certify full source-wavefunction closure in the PAW metric, exact DFT
-symmetry, or interpolation accuracy against a matched-settings DFT path.
-The experimental multi-anchor fit is not used by this route.
+`sawf-run` automatically determines supported local targets as described
+below. Its default input prefix is `wannier90`, and its default symmetry
+directory is `symmetry`. It produces `model.npz`, `bands.npz`, and
+`summary.json` only after the final model fits the supplied Hamiltonian
+budget. A path in WIN is currently required by the approximate model/band
+exporter. The continuous bound uses the actual sampled axes of the mesh,
+with unsampled fractional coordinates fixed to zero.
 
-On ADA, these two commands need only the small-matrix stage. A single task
-and CPU with 8 GiB memory is a conservative allocation for the reviewed
-eight-band case; the large WAVECAR-extraction worker/memory settings do not
-apply. Use an available compute allocation, for example a batch script with
-`--ntasks=1 --cpus-per-task=1 --mem=8G`, and set BLAS/OpenMP threads to one.
-The second command requires a new output directory; preserve a prior model
-or deliberately remove only its generated outputs before repeating it.
+Reports distinguish `accepted_approximate` from strict source certification.
+The acceptance is for the stated numerical single-particle budget, not a
+certificate of exact DFT symmetry or DFT path interpolation accuracy.
+Omitting `--accept-approximate` retains the existing strict extraction route.
+The legacy `--from-diagnostic DIRECTORY --accept-approximate` route remains
+available for explicitly reviewed, input-bound historical diagnostics. It is
+not used by the fresh workflow. Historical packages retain their reviewed
+target binding and require the corresponding explicit target.
+
+The [ADA workflow script](sawf_ada.sbatch) runs both stages in one exclusive
+72-CPU allocation. It keeps fixed `symmetry_standard` and `sawf_standard`
+output paths, supplies the example budgets above and `--energy-tol 1e-4`,
+and stops immediately if either stage fails. Submit it from the calculation
+directory with the installed Python environment active. `sawf_standard` must
+be a new directory; the script does not delete a previous model. Extraction
+uses process parallelism, while the compact localization stage is serial.
+Download both output directories for subsequent local analysis. This script
+never submits another job or reuses a previous diagnostic.
 
 For focused diagnosis of failed covariance checks, use the same seed, WAVECAR and OUTCAR. For example, run these selected tSnS points within an existing Slurm allocation:
 
@@ -161,7 +169,32 @@ These separate-channel models do not enforce operations that exchange the up/dow
 
 ## Symmetry-adapted localization
 
-Supply independently established target centers and orbital representations. This example is the validated six-band, V-centered SrVO3 spinor target:
+Omit `--center` and `--orbital` to infer a candidate target from ordinary
+Wannier centers. The program localizes the current original SCDM AMN in memory.
+If `seed.wout` exists, it reads its final centers and checks their periodic
+Cartesian agreement with the fresh ordinary centers; otherwise it uses the
+fresh centers directly. WOUT byte hashes and the center source are recorded.
+No previously saved gauge, material-specific coordinate or target registry is
+used by automatic selection.
+
+The automatic case is a general-position spatial orbit with one local scalar
+state, or one Kramers doublet for SOC, per center. Pairing and orbit matching
+use the full lattice metric, all z coordinates, and nearest periodic images.
+`--center-tol` defaults to 0.01 angstrom; this geometric matching distance is
+not a physical symmetry-error budget. The report retains input centers,
+permutations, integer cell shifts and adjustments to symmetry-consistent
+orbits. The final centers are not pinned to those coordinates.
+
+For these trivial spatial site stabilizers, the internal WannierBerri `s`
+label constructs a local representation; it is not an atomic-orbital claim.
+The original SCDM AMN remains unchanged. Ambiguous center pairing, multiple
+local doublets at one center, and nontrivial site symmetry require an explicit
+representation instead of an automatic `s` assumption. Ordinary SCDM centers
+do not in general determine a unique local representation. Full band/target
+compatibility is checked after geometric inference.
+
+Explicit center/orbital arguments remain available. This example is the
+validated six-band, V-centered SrVO3 spinor target:
 
 ```bash
 sawf-run \
@@ -173,11 +206,11 @@ sawf-run \
 
 For independent target orbits, repeat `--center X Y Z --orbital NAME` in matching order. Each center is one orbit representative; symmetry-related centers are generated automatically. The expanded target must span every selected band. `Projection` defines the target representation and does not replace the original SCDM AMN.
 
-Localization still requires a new output directory outside its input directories and never overwrites an existing result.
+Localization requires a new output directory and never overwrites an existing result. A new child of the calculation directory is allowed; protected input file paths remain excluded.
 
 The program first localizes the original guess to determine a reversible column/cell alignment, then runs SAWF from the aligned SCDM guess. The constrained objective includes every edge of the original full-mesh PAW MMN, including both ends of each edge in its gradient. A fresh constrained gradient, not the optimizer's success message or a small change in spread, establishes numerical stationarity. Exhausting the iteration budget is an error. Numerical stationarity does not establish a global minimum. No bands are dropped and the Hamiltonian is not averaged in postprocessing.
 
-Before localization, the normal command checks the raw Bloch action against the original MMN, EIG, group law and antiunitary constraints. Only after these checks pass does it reconstruct an algebraically consistent unitary/antiunitary action, using the full Seitz and spinor composition factors. The correction must fit the unchanged numerical matrix bound, and the same checks are repeated against the original inputs. A failed raw check cannot be repaired into production acceptance. Source arrays are preserved; the summary records raw residuals, the correction and reconstructed residuals.
+Before strict localization, the command checks the raw Bloch action against the original MMN, EIG, group law and antiunitary constraints. Only after these checks pass does it reconstruct an algebraically consistent unitary/antiunitary action, using the full Seitz and spinor composition factors. The correction must fit the unchanged numerical matrix bound, and the same checks are repeated against the original inputs. A failed raw check cannot be repaired into production acceptance. Source arrays are preserved; the summary records raw residuals, the correction and reconstructed residuals.
 
 The full-grid kernel is intended for compact subspaces. It refuses a dense tangent construction before allocation if the estimated per-chart workspace exceeds 256 MiB; this is not a total-process memory limit and excludes input arrays. Newton refinement, when needed, is limited to 1024 real parameters. The summary records the workspace estimate, optimization stops and final gradient. Nominally zero spreads can have a negative sign from floating-point cancellation: the unmodified values and an explicit arithmetic roundoff guard are recorded. Larger negative values still fail.
 
@@ -294,7 +327,7 @@ Orbital rotations and column-dependent lattice translations change tensor entrie
 
 All modes require a closed square `NB=NW` subspace, a complete Gamma-centered mesh and an actual Gamma wavefunction, and WAVECAR RTAG 45200 with one energy record per k point. SOC additionally requires a nonmagnetic grey-group candidate, Cartesian SAXIS and an even dimension. These restrictions reflect implemented algorithms or file formats; removing their checks would not implement the missing behavior. Arbitrary spin axes, noncollinear non-SOC calculations, joint collinear-channel constraints/export, and disentanglement remain unsupported.
 
-Spatial operations retain full Seitz rotations/translations, including screws, glides and integer composition shifts; antiunitary operations include complex conjugation. Targets may contain multiple symmetry-related centers. Analytic tests cover these operations and scalar extraction/localization, including both collinear channels. A small real non-SOC Si WAVECAR is checked against independent pymatgen and IrRep readers. SrVO3 has accepted end-to-end real-data regression. tSnS has a converged eight-band diagnostic trial and an analysis route that retains its measured input errors; this does not promote it to an accepted production model. A real magnetic `ISPIN=2` calculation has not yet been tested.
+Spatial operations retain full Seitz rotations/translations, including screws, glides and integer composition shifts; antiunitary operations include complex conjugation. Targets may contain multiple symmetry-related centers. Analytic tests cover these operations and scalar extraction/localization, including both collinear channels. A small real non-SOC Si WAVECAR is checked against independent pymatgen and IrRep readers. SrVO3 has accepted end-to-end real-data regression. tSnS also exercises the explicit approximate route, retaining its measured input errors and the declared model energy budget. A real magnetic `ISPIN=2` calculation has not yet been tested.
 
 The packaged `accepted_closure.json` records dataset-specific user decisions, each bound to four exact interface hashes. The original SrVO3 residual is `2.589629272055618e-6`, with maximum `2.59e-6`. On 2026-10-07 the user also accepted `1.5343413566685595e-6` for the new SrVO3 restart calculation (`ISTART=1`, `LWAVE=F`, `IALGO=2`); its bound `1.534345e-6` is the upper rounding boundary of the reviewed `1.53434e-6`. Acceptance concerns the single-particle SAWF/band model and does not modify other matrix checks or convergence requirements. Other inputs do not inherit either decision, and neither certifies bare Coulomb accuracy. A reviewed legacy bundle can be loaded without rewriting its report.
 

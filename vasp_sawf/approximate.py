@@ -1,4 +1,4 @@
-"""Export and localize explicitly reviewed approximate symmetry data."""
+"""Export and localize approximate symmetry data under explicit numerical budgets."""
 
 import hashlib
 import io
@@ -13,6 +13,7 @@ import numpy as np
 
 
 SCHEMA = 'sawf-bridge-approximate-bloch-v1'
+EXPLICIT_POLICY = 'explicit_numerical_budgets_v1'
 
 
 def _digest(content):
@@ -37,6 +38,82 @@ def _decision(diagnostic_sha256, hashes):
     return candidates[0]
 
 
+def _budgets(mmn_tol, hamiltonian_tol):
+    for name, value in (('matrix tolerance', mmn_tol), ('Hamiltonian budget', hamiltonian_tol)):
+        if (isinstance(value, (bool, np.bool_)) or not isinstance(value, Real)
+                or not np.isfinite(value) or value <= 0):
+            raise ValueError(f'{name} must be a positive finite real number')
+    return dict(matrix_tolerance=float(mmn_tol), hamiltonian_budget_ev=float(hamiltonian_tol))
+
+
+def _explicit_decision(digest, bundle, group, budgets):
+    return dict(policy=EXPLICIT_POLICY, diagnostic_sha256=digest, source_hashes=bundle.hashes,
+        operation_count=group.size, active_axes=np.flatnonzero(bundle.mesh > 1).tolist(), **budgets,
+        scope='Explicit numerical budgets for an approximate single-particle model; '
+              'full source coefficient closure, exact symmetry and DFT interpolation accuracy are not certified',
+        target_policy='Infer from the current SCDM localization or validate an explicit target; no material registry')
+
+
+def _source_metrics(source, raw, corrected):
+    from .localize import _gate
+
+    measurements = dict(coefficient_closure_relative_max=0., raw_vs_measured_entry_max=0.,
+        corrected_vs_measured_entry_max=0., source_unitarity_entry_max=0.,
+        source_energy_covariance_spectral_max_ev=0., independent_lstsq_difference_max=0.)
+    for point in source['diagnostic_kpoints']:
+        k = point['interface_kpoint_1based'] - 1
+        operations = point['operation_indices_0based']
+        measured = np.asarray(point['matrices_real']) + 1j * np.asarray(point['matrices_imag'])
+        rows = point.get('operations', [])
+        if [row.get('operation_index_0based') for row in rows] != operations:
+            raise ValueError('Independent source operation coverage is incomplete')
+        singular = np.linalg.svd(measured, compute_uv=False)
+        if np.min(singular) <= np.finfo(float).eps * measured.shape[-1] * np.max(singular):
+            raise ValueError('Independent source sewing matrix loses rank')
+        measurements['coefficient_closure_relative_max'] = max(
+            measurements['coefficient_closure_relative_max'], point['coefficient_closure_relative_max'])
+        for label, action in (('raw', raw), ('corrected', corrected)):
+            key = label + '_vs_measured_entry_max'
+            measurements[key] = max(measurements[key], float(abs(action[operations, k] - measured).max()))
+        measurements['source_unitarity_entry_max'] = max(measurements['source_unitarity_entry_max'],
+            float(abs(measured.conj().swapaxes(-1, -2) @ measured - np.eye(measured.shape[-1])).max()))
+        energies = np.asarray(point['energies_ev'])
+        energy = (energies[:, None] - energies[None, :]) * measured
+        measurements['source_energy_covariance_spectral_max_ev'] = max(
+            measurements['source_energy_covariance_spectral_max_ev'],
+            float(np.linalg.norm(energy, ord=2, axis=(-2, -1)).max()))
+        for row in rows:
+            field = 'independent_lstsq_difference_max'
+            value = row.get(field)
+            if (isinstance(value, bool) or not isinstance(value, Real)
+                    or not np.isfinite(value) or value < 0):
+                raise ValueError(f'Invalid independent source measurement: {field}')
+            measurements[field] = max(measurements[field], float(value))
+    checks = {}
+    _gate(checks, 'independent_lstsq_difference_max', measurements['independent_lstsq_difference_max'])
+    return measurements
+
+
+def _check_explicit_metrics(report, decision):
+    from .localize import _gate
+
+    checks = report.setdefault('approximate_checks', {})
+    matrix_tol = decision['matrix_tolerance']
+    energy_tol = decision['hamiltonian_budget_ev']
+    for name in ('raw_action', 'reconstructed_action'):
+        action = report[name]
+        _gate(checks, name + '_mmn_max', max(row['mmn_covariance_entry_max']
+            for row in action['per_operation']), matrix_tol)
+        _gate(checks, name + '_energy_spectral_max_ev', max(row['energy_covariance_spectral_max_ev']
+            for row in action['per_operation']), energy_tol)
+    _gate(checks, 'raw_unitarity_max', report['raw_action']['unitarity_entry_max'], matrix_tol)
+    _gate(checks, 'action_change_entry_max', report['action_change_entry_max'], matrix_tol)
+    for key in ('raw_vs_measured_entry_max', 'corrected_vs_measured_entry_max', 'source_unitarity_entry_max'):
+        _gate(checks, key, report['source_checks'][key], matrix_tol)
+    _gate(checks, 'source_energy_covariance_spectral_max_ev',
+          report['source_checks']['source_energy_covariance_spectral_max_ev'], energy_tol)
+
+
 def _check_target(center, orbital, decision):
     from .localize import _normalize_target_orbits
 
@@ -57,7 +134,7 @@ def _check_budget(analysis, decision):
     axes = decision['active_axes']
     fixed = {str(i): 0. for i in range(3) if i not in axes}
     if any(row.get('active_axes') != axes or row.get('fixed_inactive_coordinates') != fixed for row in rows):
-        raise ValueError('Hamiltonian bound coordinate plane differs from the reviewed scope')
+        raise ValueError('Hamiltonian bound coordinate plane differs from the configured scope')
     values = [row.get('uniform_upper_ev') for row in rows]
     if any(isinstance(value, (bool, np.bool_)) or not isinstance(value, Real)
            or not np.isfinite(value) or value < 0 for value in values):
@@ -66,18 +143,20 @@ def _check_budget(analysis, decision):
     budget = decision['hamiltonian_budget_ev']
     if (isinstance(budget, (bool, np.bool_)) or not isinstance(budget, Real)
             or not np.isfinite(budget) or budget <= 0):
-        raise ValueError('Reviewed Hamiltonian budget must be a positive finite real number')
+        raise ValueError('Hamiltonian budget must be a positive finite real number')
     if maximum > budget:
-        raise ValueError(f'Hamiltonian bound {maximum} eV exceeds the reviewed budget {budget} eV')
+        raise ValueError(f'Hamiltonian bound {maximum} eV exceeds the configured budget {budget} eV')
     return maximum
 
 
-def _prepare_output(output_dir, inputs):
+def _prepare_output(output_dir, inputs, *, warn=True, preserved_inputs=()):
     requested = Path(output_dir)
     output = requested.resolve()
     protected = {Path(path).resolve() for path in inputs}
+    preserved = {Path(path).resolve() for path in preserved_inputs}
     if (requested.is_symlink() or (output.exists() and not output.is_dir())
-            or any(output.is_relative_to(path) or path.is_relative_to(output) for path in protected)):
+            or any(output.is_relative_to(path) or path.is_relative_to(output)
+                   for path in protected - preserved)):
         raise ValueError('Output must be a real directory separate from protected input file paths')
     targets = [output/'bloch.npz', output/'report.json']
     existing = []
@@ -90,7 +169,7 @@ def _prepare_output(output_dir, inputs):
         if target.exists():
             existing.append(target)
     output.mkdir(parents=True, exist_ok=True)
-    if existing:
+    if existing and warn:
         print('Warning: overwriting existing symmetry files: '+', '.join(path.name for path in existing),
               file=sys.stderr, flush=True)
     for path in existing:
@@ -114,20 +193,21 @@ def _base_report(schema):
         strict_ready=False, strict_checks_passed=False, numerical_checks_passed=False,
         source_full_closure_certified=False, symmetrize_hr=False, wavefunction_bytes_read=0,
         physical_acceptance_status='not_assessed',
-        limitation='Reviewed numerical approximation only. Full source coefficient closure, exact symmetry, '
+        limitation='Explicit numerical approximation only. Full source coefficient closure, exact symmetry, '
                    'and DFT interpolation accuracy are not certified; original MMN and EIG remain unchanged.')
 
 
-def _reconstruct(seed, folder):
+def _reconstruct(seed, folder, *, budgets=None):
     from .localize import _gate
     from .representation import reconstruct_representation
     from .symmetry import mmn_translation_phases, transport_sewing
     from .trial import _action_metrics, _read_diagnostic
 
     bundle, source, digest, spin, group, kmap, edges, gamma, anchors, binding = _read_diagnostic(seed, folder)
-    decision = _decision(digest, bundle.hashes)
+    decision = (_decision(digest, bundle.hashes) if budgets is None
+                else _explicit_decision(digest, bundle, group, budgets))
     if source['evaluated_wavecar_kpoints_1based'] != list(range(1, source['wavecar']['num_kpoints'] + 1)):
-        raise ValueError('Reviewed approximate extraction requires complete stored-k diagnostic coverage')
+        raise ValueError('Approximate extraction requires complete stored-k diagnostic coverage')
     if group.size != decision['operation_count']:
         raise ValueError('Reviewed operation count differs from the recomputed group')
     anti = np.array([operation.time_reversal for operation in group.symmetries], dtype=bool)
@@ -153,17 +233,28 @@ def _reconstruct(seed, folder):
         source_coefficient_coverage=dict(scope='All stored-k little groups; generic cross-k source closure is not certified',
             checked_stored_kpoints=source['evaluated_wavecar_kpoints_1based'],
             full_closure_certified=False, stored_kpoint_count=source['wavecar']['num_kpoints']))
+    if budgets is not None:
+        report['source_checks'] = _source_metrics(source, raw, corrected)
+        try:
+            _check_explicit_metrics(report, decision)
+        except ValueError as error:
+            error.report = report
+            raise
     arrays = dict(raw_d=raw, reconstructed_d=corrected, kmap=kmap, anti=anti,
         kpoints=bundle.kpoints, eigenvalues_eV=bundle.eig, bands_vasp_1based=bundle.bands_vasp_1based)
     return report, arrays, decision
 
 
-def export_approximate(seed, diagnostic_dir, output_dir):
-    """Reuse reviewed compact evidence, without applying strict-source certification."""
+def export_approximate(seed, diagnostic_dir, output_dir, *, mmn_tol=None, hamiltonian_tol=None,
+                       _warn_overwrite=True):
+    """Reuse compact evidence under reviewed or explicit budgets, without strict-source certification."""
+    budgets = None if mmn_tol is None and hamiltonian_tol is None else _budgets(mmn_tol, hamiltonian_tol)
     seed, folder = Path(seed).resolve(), Path(diagnostic_dir).resolve()
     files = [Path(f'{seed}.{ext}') for ext in ('win', 'amn', 'mmn', 'eig')]
     diagnostic = folder/'diagnostic.json'
-    output = _prepare_output(output_dir, [seed, *files, diagnostic])
+    preserved = [diagnostic] if diagnostic.parent == Path(output_dir).resolve() else []
+    output = _prepare_output(output_dir, [seed, *files, diagnostic], warn=_warn_overwrite,
+                             preserved_inputs=preserved)
     report = _base_report(SCHEMA)
     path = output/'report.json'
     path.write_text(json.dumps(report, indent=2)+'\n')
@@ -171,8 +262,9 @@ def export_approximate(seed, diagnostic_dir, output_dir):
     try:
         content = diagnostic.read_bytes()
         preliminary = _json(content)
-        _decision(_digest(content), preliminary.get('source_hashes'))
-        details, arrays, decision = _reconstruct(seed, folder)
+        if budgets is None:
+            _decision(_digest(content), preliminary.get('source_hashes'))
+        details, arrays, decision = _reconstruct(seed, folder, budgets=budgets)
         if _digest(content) != details['source_diagnostic_sha256'] or diagnostic.read_bytes() != content:
             raise ValueError('Diagnostic evidence changed during approximate extraction')
         if any(_digest(file.read_bytes()) != details['source_hashes'][file.suffix[1:]] for file in files):
@@ -189,12 +281,51 @@ def export_approximate(seed, diagnostic_dir, output_dir):
             physical_acceptance_status='accepted_approximate_single_particle_model',
             acceptance_scope=decision['scope'], diagnostic_embedded_exact=True)
     except Exception as error:
+        if isinstance(getattr(error, 'report', None), dict):
+            report.update(error.report)
         report.update(error=str(error), status='not_ready', accepted=False, sawf_ready=False)
         (output/'bloch.npz').unlink(missing_ok=True)
         raise
     finally:
         report['seconds'] = time.perf_counter()-started
         path.write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')
+    return report
+
+
+def extract_fresh_approximate(seed, wavecar, outcar, output_dir, *, mmn_tol, hamiltonian_tol,
+                              workers=None, memory_gb=None, spin_channel=None, tol=1e-5, energy_tol=1e-8):
+    """Measure every stored k point before applying explicitly supplied numerical budgets."""
+    from .symmetry import export_symmetry
+
+    budgets = _budgets(mmn_tol, hamiltonian_tol)
+    seed, wavecar, outcar = map(lambda path: Path(path).resolve(), (seed, wavecar, outcar))
+    inputs = [seed, wavecar, outcar, *(Path(f'{seed}.{ext}') for ext in ('win', 'amn', 'mmn', 'eig'))]
+    output = _prepare_output(output_dir, inputs)
+    report = _base_report(SCHEMA)
+    report.update(requested_budgets=budgets, extraction_mode='fresh_all_stored_kpoints',
+                  wavefunction_bytes_read=None)
+    (output/'report.json').write_text(json.dumps(report, indent=2)+'\n')
+    started = time.perf_counter()
+    diagnostic = None
+    try:
+        diagnostic = export_symmetry(seed, wavecar, outcar, output, workers=workers, memory_gb=memory_gb,
+            spin_channel=spin_channel, tol=tol, energy_tol=energy_tol, diagnose_all=True)
+        report = export_approximate(seed, output, output, mmn_tol=mmn_tol,
+                                    hamiltonian_tol=hamiltonian_tol, _warn_overwrite=False)
+    except Exception as error:
+        current = _json((output/'report.json').read_bytes())
+        report.update(current, error=str(error), status='not_ready', accepted=False, sawf_ready=False)
+        raise
+    finally:
+        report.update(extraction_mode='fresh_all_stored_kpoints', requested_budgets=budgets)
+        if diagnostic is not None:
+            report.update(wavefunction_bytes_read=sum(row['bytes_returned']
+                for row in diagnostic.get('read_ledger', []) if row['kind'] == 'coefficients'),
+                source_read_accounting={key: diagnostic.get(key) for key in
+                    ('read_bytes', 'metadata_read_bytes', 'total_logical_read_bytes', 'kpoint_resources',
+                     'execution', 'memory_estimate', 'wall_seconds', 'peak_rss_kib', 'read_accounting_complete')})
+        report['fresh_extraction_seconds'] = time.perf_counter() - started
+        (output/'report.json').write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')
     return report
 
 
@@ -223,13 +354,18 @@ def _read_package(seed, folder):
     if encoded is None or encoded.dtype != np.uint8 or encoded.ndim != 1:
         raise ValueError('Approximate package lacks exact diagnostic UTF-8 bytes')
     diagnostic = encoded.tobytes()
-    decision = _decision(_digest(diagnostic), report.get('source_hashes'))
+    recorded = report.get('acceptance', {})
+    explicit = recorded.get('policy') == EXPLICIT_POLICY
+    budgets = _budgets(recorded.get('matrix_tolerance'), recorded.get('hamiltonian_budget_ev')) if explicit else None
+    decision = recorded if explicit else _decision(_digest(diagnostic), report.get('source_hashes'))
     if report.get('acceptance') != decision or report.get('source_diagnostic_sha256') != _digest(diagnostic):
         raise ValueError('Approximate acceptance record differs from the reviewed registry')
     with tempfile.TemporaryDirectory(prefix='sawf-approximate-check-') as temporary:
         Path(temporary, 'diagnostic.json').write_bytes(diagnostic)
-        details, rebuilt, _ = _reconstruct(seed, Path(temporary))
-    for key in ('source_num_bands', 'shape_nk_nb_nw', 'mesh', 'bands_vasp_1based', 'spin'):
+        details, rebuilt, decision = _reconstruct(seed, Path(temporary), budgets=budgets)
+    if recorded != decision:
+        raise ValueError('Approximate acceptance policy disagrees with recomputed input evidence')
+    for key in ('source_hashes', 'source_num_bands', 'shape_nk_nb_nw', 'mesh', 'bands_vasp_1based', 'spin'):
         if report.get(key) != details[key]:
             raise ValueError(f'Approximate source metadata differs from recomputed evidence: {key}')
     checks = {}
@@ -254,9 +390,9 @@ def _clean_staging(value, root):
     return value
 
 
-def run_approximate(seed, symmetry_dir, output_dir, *, center, orbital, num_iter=1000,
-                    dft_eigenval=None, energy_reference_ev=0., points_per_segment=101):
-    """Localize unchanged inputs and enforce the reviewed Fourier error budget."""
+def run_approximate(seed, symmetry_dir, output_dir, *, center=None, orbital=None, num_iter=1000,
+                    dft_eigenval=None, energy_reference_ev=0., points_per_segment=101, center_tol=1e-2):
+    """Localize unchanged inputs and enforce the configured Fourier error budget."""
     from .analysis import analyze_trial
     from .trial import run_trial
 
@@ -272,14 +408,17 @@ def run_approximate(seed, symmetry_dir, output_dir, *, center, orbital, num_iter
         hashes = {str(path.resolve()): _digest(path.read_bytes()) for path in files}
         diagnostic, decision, details = _read_package(seed, folder)
         report.update(details, input_sha256=hashes, hamiltonian_budget_ev=decision['hamiltonian_budget_ev'])
-        center, orbital = _check_target(center, orbital, decision)
+        explicit = decision.get('policy') == EXPLICIT_POLICY
+        if not explicit and center is not None:
+            center, orbital = _check_target(center, orbital, decision)
         with tempfile.TemporaryDirectory(prefix='sawf-approximate-run-') as temporary:
             temporary = Path(temporary)
             evidence = temporary/'source'
             evidence.mkdir()
             (evidence/'diagnostic.json').write_bytes(diagnostic)
             try:
-                trial = run_trial(seed, evidence, temporary/'trial', center=center, orbital=orbital, num_iter=num_iter)
+                trial = run_trial(seed, evidence, temporary/'trial', center=center, orbital=orbital,
+                                  num_iter=num_iter, center_tol=center_tol)
             except Exception:
                 failed = temporary/'trial/summary.json'
                 if failed.exists():
@@ -288,8 +427,9 @@ def run_approximate(seed, symmetry_dir, output_dir, *, center, orbital, num_iter
             report.update(target=trial['target'], localisation=trial['localisation'],
                 converged=trial['converged'], numerical_converged=trial['numerical_converged'],
                 trial_evidence=_clean_staging(trial, temporary))
-            _check_target([row['position_fractional'] for row in trial['target']['orbits']],
-                          [row['orbital'] for row in trial['target']['orbits']], decision)
+            if not explicit:
+                _check_target([row['position_fractional'] for row in trial['target']['orbits']],
+                              [row['orbital'] for row in trial['target']['orbits']], decision)
             try:
                 analysis = analyze_trial(temporary/'trial', temporary/'analysis', seed=seed,
                     points_per_segment=points_per_segment, dft_eigenval=dft or None,

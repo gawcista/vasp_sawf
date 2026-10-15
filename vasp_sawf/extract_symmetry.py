@@ -22,12 +22,22 @@ def main():
     parser.add_argument('--from-diagnostic', type=Path, metavar='DIRECTORY',
                         help='Reuse a completed, reviewed diagnostic without reading WAVECAR; requires --accept-approximate')
     parser.add_argument('--accept-approximate', action='store_true',
-                        help='Apply a recorded, input-bound approval for approximate symmetry; strict checks remain unchanged')
+                        help='Accept an approximate model under explicit numerical budgets; strict checks remain unchanged')
+    parser.add_argument('--matrix-tol', '--mmn-tol', dest='mmn_tol', type=float,
+                        help='Explicit dimensionless entrywise budget for native MMN covariance, action correction and independent sewing agreement')
+    parser.add_argument('--hamiltonian-tol', type=float,
+                        help='Explicit Hamiltonian symmetry budget in eV; checked again on the continuous interpolation domain')
     args = parser.parse_args()
-    if args.accept_approximate != (args.from_diagnostic is not None):
-        parser.error('--from-diagnostic and --accept-approximate must be supplied together')
-    if args.from_diagnostic is not None and args.diagnose_kpoints is not None:
-        parser.error('--from-diagnostic cannot be combined with --diagnose-kpoints')
+    has_budgets = args.mmn_tol is not None or args.hamiltonian_tol is not None
+    if args.from_diagnostic is not None and not args.accept_approximate:
+        parser.error('--from-diagnostic requires --accept-approximate')
+    if args.diagnose_kpoints is not None and (args.from_diagnostic is not None or args.accept_approximate):
+        parser.error('--diagnose-kpoints cannot be combined with approximate extraction')
+    if has_budgets and not args.accept_approximate:
+        parser.error('Numerical budgets require --accept-approximate')
+    if ((args.accept_approximate and args.from_diagnostic is None) or has_budgets):
+        if args.mmn_tol is None or args.hamiltonian_tol is None:
+            parser.error('Fresh approximate extraction requires both --matrix-tol and --hamiltonian-tol')
     for name in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'NUMBA_NUM_THREADS'):
         os.environ[name] = '1'
     cache_root = Path(os.environ.get('XDG_CACHE_HOME', ''))
@@ -40,7 +50,13 @@ def main():
     try:
         if args.from_diagnostic is not None:
             from vasp_sawf.approximate import export_approximate
-            report = export_approximate(args.seed, args.from_diagnostic, args.output)
+            budgets = dict(mmn_tol=args.mmn_tol, hamiltonian_tol=args.hamiltonian_tol) if has_budgets else {}
+            report = export_approximate(args.seed, args.from_diagnostic, args.output, **budgets)
+        elif args.accept_approximate:
+            from vasp_sawf.approximate import extract_fresh_approximate
+            report = extract_fresh_approximate(args.seed, args.wavecar, args.outcar, args.output,
+                mmn_tol=args.mmn_tol, hamiltonian_tol=args.hamiltonian_tol, workers=args.workers,
+                memory_gb=args.memory_gb, spin_channel=args.spin_channel, tol=args.tol, energy_tol=args.energy_tol)
         else:
             from vasp_sawf.symmetry import export_symmetry
             report = export_symmetry(args.seed, args.wavecar, args.outcar, args.output,

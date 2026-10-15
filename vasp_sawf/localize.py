@@ -196,6 +196,44 @@ def _target_representation(sym, centers, orbitals):
     return blocks, positions, descriptor
 
 
+def _resolve_target(seed, ordinary_centers, lattice, spacegroup, center, orbital, *, center_tol=.01):
+    """Infer a local target from current centers, or preserve an explicit representation."""
+    from .targets import infer_target, read_wout_centers
+
+    if not np.isfinite(center_tol) or center_tol <= 0:
+        raise ValueError('Center matching tolerance must be positive and finite')
+    if (center is None) != (orbital is None):
+        raise ValueError('Supply center and orbital together, or omit both for automatic targets')
+    if center is not None:
+        centers, orbitals = _normalize_target_orbits(center, orbital)
+        return centers, orbitals, dict(source='explicit_target')
+    centers = np.asarray(ordinary_centers)
+    source = dict(source='current_original_amn_localization', center_tolerance_angstrom=center_tol)
+    wout = Path(f'{seed}.wout')
+    if wout.exists():
+        content = wout.read_bytes()
+        imported = read_wout_centers(wout, len(centers))
+        _, _, distance = _match_center_columns(centers, imported, lattice)
+        if distance > center_tol:
+            raise ValueError(f'WOUT centers disagree with current original-AMN localization by {distance} angstrom; '
+                             'check the matching WOUT or supply an explicit target')
+        if wout.read_bytes() != content:
+            raise ValueError('WOUT changed while reading target centers')
+        centers = imported
+        source.update(source='wannier90.wout', source_path=str(wout.resolve()),
+                      source_sha256=hashlib.sha256(content).hexdigest(),
+                      ordinary_center_match_max_angstrom=distance)
+    representatives, orbitals, inference = infer_target(centers, lattice, spacegroup, center_tol=center_tol)
+    source['inference'] = inference
+    return representatives, orbitals, source
+
+
+def _verify_target_source(source):
+    if source.get('source') == 'wannier90.wout':
+        if hashlib.sha256(Path(source['source_path']).read_bytes()).hexdigest() != source['source_sha256']:
+            raise ValueError('Target WOUT changed during localization')
+
+
 def _target_matrix(blocks, kpoint, image, operation):
     from scipy.linalg import block_diag
     return block_diag(*(block.get_on_points(kpoint, image, operation) for block in blocks))
@@ -613,12 +651,14 @@ def _gate(report, key, value, tolerance=1e-6):
         raise ValueError(f'{key} failed the numerical check: {value} > {tolerance}')
 
 
-def _new_output(output_dir, source_files):
+def _new_output(output_dir, source_files, *, allow_input_directory_child=False):
     requested = Path(output_dir)
     output = requested.resolve()
-    parents = [Path(p).resolve().parent for p in source_files]
-    if requested.is_symlink() or output.exists() or any(output.is_relative_to(p) for p in parents):
-        raise ValueError('Run output must be a new directory outside protected input directories; overwriting is forbidden')
+    protected = [Path(p).resolve() for p in source_files]
+    if (requested.is_symlink() or output.exists()
+            or (not allow_input_directory_child and any(output.is_relative_to(p.parent) for p in protected))
+            or any(output.is_relative_to(p) or p.is_relative_to(output) for p in protected)):
+        raise ValueError('Run output must be a new directory separate from protected input file paths; overwriting is forbidden')
     output.mkdir(parents=True, exist_ok=False)
     return output
 
@@ -697,10 +737,11 @@ def _ordinary_initial_gauge(data, *, num_iter=1000):
     return gauge, centers, report
 
 
-def run_sawf(seed, symmetry_dir, output_dir, *, center, orbital, num_iter=1000,
-             dft_eigenval=None, energy_reference_ev=0.):
+def run_sawf(seed, symmetry_dir, output_dir, *, center=None, orbital=None, num_iter=1000,
+             dft_eigenval=None, energy_reference_ev=0., center_tol=.01):
     """Initialize from original AMN, align to the target representation, and run SAWF; the DFT path is optional plotting data."""
-    center, orbital = _normalize_target_orbits(center, orbital)
+    if (center is None) != (orbital is None):
+        raise ValueError('Supply center and orbital together, or omit both for automatic targets')
     if not np.isfinite(energy_reference_ev):
         raise ValueError('The plot energy reference must be finite')
     seed, symmetry_dir = [Path(p).resolve() for p in (seed, symmetry_dir)]
@@ -708,7 +749,7 @@ def run_sawf(seed, symmetry_dir, output_dir, *, center, orbital, num_iter=1000,
     sources += [symmetry_dir/'bloch.npz',symmetry_dir/'report.json']
     if dft_eigenval is not None:
         sources.append(Path(dft_eigenval))
-    output = _new_output(output_dir,sources)
+    output = _new_output(output_dir,sources, allow_input_directory_child=True)
     report = dict(schema='sawf-bridge-model-v2',status='not_ready',sawf_ready=False,converged=False,
                   source_seed=str(seed),symmetrize=False,irreducible=False,wavefunction_bytes_read=0)
     started = time.perf_counter()
@@ -716,7 +757,7 @@ def run_sawf(seed, symmetry_dir, output_dir, *, center, orbital, num_iter=1000,
     try:
         with redirect_stdout(transcript):
             _run_sawf(seed,symmetry_dir,output,report,num_iter,
-                      center,orbital,dft_eigenval,energy_reference_ev)
+                      center,orbital,dft_eigenval,energy_reference_ev,center_tol)
     except Exception as error:
         report.update(error=str(error),last_output_lines=transcript.getvalue().splitlines()[-15:])
         if hasattr(error, 'report'):
@@ -730,7 +771,7 @@ def run_sawf(seed, symmetry_dir, output_dir, *, center, orbital, num_iter=1000,
 
 
 def _run_sawf(seed, symmetry_dir, output, report, num_iter,
-              center, orbital, dft_eigenval, energy_reference_ev):
+              center, orbital, dft_eigenval, energy_reference_ev, center_tol=.01):
     from irrep.spacegroup import SpaceGroup
     from wannierberri.system.system_w90 import System_w90
     from .bands import evaluate_hamiltonian, evaluate_bands
@@ -795,7 +836,12 @@ def _run_sawf(seed, symmetry_dir, output, report, num_iter,
         raise ValueError('Packaged k-point/G mappings disagree with the actual interface')
     d = _checked_bloch_action(bundle, sg, arrays['d'], report)
     sym = make_symmetrizer(bundle, sg, d)
+    data, _ = load_wannier_data(seed,source_nb=source_nb)
+    ordinary_u, ordinary_centers, ordinary_report = _ordinary_initial_gauge(data,num_iter=num_iter)
+    center, orbital, target_source = _resolve_target(
+        seed, ordinary_centers, bundle.lattice, sg, center, orbital, center_tol=center_tol)
     target_blocks, target_centers, target_report = _target_representation(sym, center, orbital)
+    target_report['selection'] = target_source
     if sym.num_wann != nb:
         raise ValueError(f'Target representation produces {sym.num_wann} functions, inconsistent with {nb} target bands')
     chars = [abs(np.trace(d[s,k])-sum(np.trace(block) for block in sym.D_wann_blocks[i][s]))
@@ -813,8 +859,6 @@ def _run_sawf(seed, symmetry_dir, output, report, num_iter,
         path = read_dft_eigenval(dft_eigenval,bundle.bands_vasp_1based,
                                 spin_channel=spin['spin_channel'], source_ispin=spin['source_ispin'])
         geometry = path_geometry(path['kpoints'],read_win_path(f'{seed}.win'),bundle.lattice)
-    data, _ = load_wannier_data(seed,source_nb=source_nb)
-    ordinary_u, ordinary_centers, ordinary_report = _ordinary_initial_gauge(data,num_iter=num_iter)
     ordinary_system = None
     if dft_eigenval is not None:
         ordinary_system = System_w90(data,symmetrize=False,fftlib='numpy',spinor=spinor,
@@ -826,6 +870,7 @@ def _run_sawf(seed, symmetry_dir, output, report, num_iter,
     report['initial_alignment'] = alignment
     report['ordinary_initialization'] = ordinary_report
     report['localisation'] = wannierise_full_mesh(data, sym, D, num_iter=num_iter, initial_gauge=initial)
+    _verify_target_source(target_source)
     u = np.array([data.chk.v_matrix[k] for k in range(sym.NK)])
     cov, hcov = [], []
     hk = u.conj().swapaxes(-1,-2) @ (bundle.eig[:,:,None]*u)

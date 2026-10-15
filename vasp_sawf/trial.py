@@ -182,16 +182,17 @@ def _action_metrics(action, bundle, group, kmap, edges, phases):
                     kpoints=bundle.kpoints, translations_diff=translations), per_operation=rows)
 
 
-def run_trial(seed, symmetry_dir, output_dir, *, center, orbital, num_iter=1000,
-              dft_eigenval=None, energy_reference_ev=0.):
+def run_trial(seed, symmetry_dir, output_dir, *, center=None, orbital=None, num_iter=1000,
+              dft_eigenval=None, energy_reference_ev=0., center_tol=.01):
     """Localize a diagnostic action without accepting its source or exporting a production model."""
-    from .localize import _new_output, _normalize_target_orbits
+    from .localize import _new_output
 
     if dft_eigenval is not None:
         raise ValueError('DFT path export is unavailable for unaccepted diagnostic trials')
     if not np.isfinite(energy_reference_ev):
         raise ValueError('The energy reference must be finite')
-    center, orbital = _normalize_target_orbits(center, orbital)
+    if (center is None) != (orbital is None):
+        raise ValueError('Supply center and orbital together, or omit both for automatic targets')
     seed, folder = Path(seed).resolve(), Path(symmetry_dir).resolve()
     files = [Path(f'{seed}.{ext}') for ext in ('win', 'amn', 'mmn', 'eig')]
     output = _new_output(output_dir, [*files, folder / 'diagnostic.json'])
@@ -204,7 +205,7 @@ def run_trial(seed, symmetry_dir, output_dir, *, center, orbital, num_iter=1000,
     started, transcript = time.perf_counter(), io.StringIO()
     try:
         with redirect_stdout(transcript):
-            _run_trial(seed, folder, output, report, center, orbital, num_iter)
+            _run_trial(seed, folder, output, report, center, orbital, num_iter, center_tol)
     except Exception as error:
         report.update(error=str(error), last_output_lines=transcript.getvalue().splitlines()[-15:])
         if isinstance(getattr(error, 'report', None), dict):
@@ -217,10 +218,10 @@ def run_trial(seed, symmetry_dir, output_dir, *, center, orbital, num_iter=1000,
     return report
 
 
-def _run_trial(seed, folder, output, report, center, orbital, num_iter):
+def _run_trial(seed, folder, output, report, center, orbital, num_iter, center_tol=.01):
     from .inputs import load_wannier_data
     from .localize import (_ordinary_initial_gauge, align_scdm_initial_gauge, _target_representation,
-                           _target_matrix, wannierise_full_mesh, _gate)
+                           _target_matrix, wannierise_full_mesh, _gate, _resolve_target, _verify_target_source)
     from .representation import reconstruct_representation
     from .symmetry import mmn_translation_phases, transport_sewing, make_symmetrizer, group_residuals
 
@@ -253,7 +254,12 @@ def _run_trial(seed, folder, output, report, center, orbital, num_iter):
             _matrices(point, (len(point['operation_indices_0based']), bundle.eig.shape[-1], bundle.eig.shape[-1]),
                       'selected little group'), strict=True)]
     sym = make_symmetrizer(bundle, group, corrected)
+    data, _ = load_wannier_data(seed, source_nb=source['source_num_bands'])
+    ordinary, centers, ordinary_report = _ordinary_initial_gauge(data, num_iter=num_iter)
+    center, orbital, target_source = _resolve_target(
+        seed, centers, bundle.lattice, group, center, orbital, center_tol=center_tol)
     blocks, positions, target_report = _target_representation(sym, center, orbital)
+    target_report['selection'] = target_source
     if sym.num_wann != bundle.eig.shape[-1]:
         raise ValueError('Target representation does not span every original target band')
     target = np.array([[_target_matrix(blocks, k, bundle.kpoints[kmap[g, i]], g)
@@ -263,15 +269,14 @@ def _run_trial(seed, folder, output, report, center, orbital, num_iter):
     _gate(report, 'target_group_composition_max', target_product['group_composition_max'])
     _gate(report, 'target_unitarity_max', abs(target.conj().swapaxes(-1, -2) @ target
                                              - np.eye(bundle.eig.shape[-1])).max())
-    target_report['basis_role'] = ('User-supplied center orbits and local matrix representations; '
+    target_report['basis_role'] = ('Center orbits and local matrix representations selected as recorded; '
                                  'orbital labels alone do not establish atomic orbital character')
-    data, _ = load_wannier_data(seed, source_nb=source['source_num_bands'])
-    ordinary, centers, ordinary_report = _ordinary_initial_gauge(data, num_iter=num_iter)
     initial, alignment = align_scdm_initial_gauge(bundle.amn, ordinary, centers, bundle.lattice,
         bundle.kpoints, sym, target_centers=positions @ bundle.lattice)
     alignment['ordinary_provenance'] = 'Unconstrained localization from the bound original AMN in this process'
     report.update(target=target_report, ordinary_initialization=ordinary_report, initial_alignment=alignment)
     report['localisation'] = wannierise_full_mesh(data, sym, target, initial_gauge=initial, num_iter=num_iter)
+    _verify_target_source(target_source)
     u = np.array([data.chk.v_matrix[k] for k in range(sym.NK)])
     gauge_covariance = max(float(abs(corrected[g] @ (u.conj() if anti[g] else u)
                                       - u[kmap[g]] @ target[g]).max()) for g in range(group.size))

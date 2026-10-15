@@ -577,11 +577,13 @@ def _diagnose_selected(report, report_path, bundle, sg, metadata, wavecar, spin,
 
 
 def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_gb=None, spin_channel=None,
-                    tol=1e-5, energy_tol=1e-8, diagnose_kpoints=None):
+                    tol=1e-5, energy_tol=1e-8, diagnose_kpoints=None, diagnose_all=False):
     """Export Bloch representations and apply approved coefficient-closure decisions without bypassing other checks."""
     started = time.perf_counter()
-    diagnostic = diagnose_kpoints is not None
-    if diagnostic:
+    if diagnose_all and diagnose_kpoints is not None:
+        raise ValueError('All-stored-k diagnostics cannot also select individual k points')
+    diagnostic = diagnose_all or diagnose_kpoints is not None
+    if diagnose_kpoints is not None:
         diagnose_kpoints = list(diagnose_kpoints)
         if (not diagnose_kpoints or any(isinstance(k, (bool, np.bool_)) or not isinstance(k, Integral)
                                        or k < 1 for k in diagnose_kpoints)
@@ -647,6 +649,9 @@ def export_symmetry(seed, wavecar, outcar, output_dir, *, workers=None, memory_g
         report['read_accounting_complete'] = False
         report['peak_rss_scope'] = 'peak_rss_kib is the parent process; per-k worker peaks are lifetime process maxima, not simultaneous node RSS'
         header = inspect_wavecar(wavecar)
+        if diagnose_all:
+            diagnose_kpoints = list(range(1, header.num_kpoints + 1))
+            report['requested_wavecar_kpoints_1based'] = diagnose_kpoints
         if diagnostic and max(diagnose_kpoints) > header.num_kpoints:
             raise ValueError(f'Diagnostic k points exceed the {header.num_kpoints} stored WAVECAR points')
         report['header_preflight_read_bytes'] = 128

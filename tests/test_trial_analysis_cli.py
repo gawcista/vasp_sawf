@@ -37,9 +37,9 @@ def test_analysis_rejects_options_that_would_be_silently_ignored(monkeypatch, ex
     assert error.value.code == 2
 
 
-def test_localization_still_requires_original_input_and_target_arguments(monkeypatch):
+def test_localization_rejects_incomplete_explicit_target(monkeypatch):
     from vasp_sawf.run_sawf import main
-    monkeypatch.setattr(sys, 'argv', ['sawf-run', '--output', 'model'])
+    monkeypatch.setattr(sys, 'argv', ['sawf-run', '--output', 'model', '--orbital', 's'])
     with pytest.raises(SystemExit) as error:
         main()
     assert error.value.code == 2

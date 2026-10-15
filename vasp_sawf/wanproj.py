@@ -166,7 +166,7 @@ def _export_approximate_wanproj(model_dir, symmetry_dir, output_dir, *, seed=Non
         record = source_diagnostic.get(key, {})
         if isinstance(record, dict) and isinstance(record.get('path'), str):
             protected.append(Path(record['path']))
-    output = _new_output(output_dir, protected)
+    output = _new_output(output_dir, protected, allow_input_directory_child=True)
     try:
         wanproj = write_wanproj(output/'WANPROJ', U=model['U'], kpoints=model['kpoints'],
             bands_vasp_1based=source['bands_vasp_1based'], source_nb=source['source_num_bands'], mesh=source['mesh'])
@@ -284,7 +284,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--model', required=True, type=Path, help='Accepted model directory containing model.npz and summary.json')
     parser.add_argument('--symmetry', required=True, type=Path, help='Bound symmetry package directory')
-    parser.add_argument('--output', required=True, type=Path, help='New export directory outside all protected input directories')
+    parser.add_argument('--output', required=True, type=Path, help='New export directory separate from protected input file paths')
     parser.add_argument('--seed', type=Path, help='Relocated interface seed for accepted approximate model validation')
     args = parser.parse_args()
     try:

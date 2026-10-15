@@ -11,7 +11,8 @@ import pytest
 from test_model_analysis import saved_model
 
 
-def test_approximate_export_reuses_saved_gauge_and_relocated_inputs(saved_model, tmp_path, monkeypatch):
+@pytest.mark.parametrize('inside_inputs', [False, True])
+def test_approximate_export_reuses_saved_gauge_and_relocated_inputs(saved_model, tmp_path, monkeypatch, inside_inputs):
     from vasp_sawf import localize
     from vasp_sawf.wanproj import export_wanproj, read_wanproj
 
@@ -25,7 +26,7 @@ def test_approximate_export_reuses_saved_gauge_and_relocated_inputs(saved_model,
         raise AssertionError('Saved WANPROJ export must not repeat localization')
     monkeypatch.setattr(localize, '_ordinary_initial_gauge', forbidden)
     monkeypatch.setattr(localize, 'wannierise_full_mesh', forbidden)
-    output = tmp_path/'export'
+    output = (relocated if inside_inputs else tmp_path)/'export'
     report = export_wanproj(model, package, output, seed=seed)
     restored = read_wanproj(output/'WANPROJ')
     with np.load(model/'model.npz', allow_pickle=False) as arrays:

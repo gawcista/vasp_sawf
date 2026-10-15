@@ -462,16 +462,25 @@ def run_approximate(seed, symmetry_dir, output_dir, *, center=None, orbital=None
                     'Exact trial_summary_utf8 bytes preserve the historical stage hash; any paths inside those '
                     'bytes are historical provenance, never required external files.',
                 hamiltonian_uniform_upper_ev=maximum, hamiltonian_budget_ev=decision['hamiltonian_budget_ev'])
+        from .wanproj import write_wanproj
+        if report['spin']['source_ispin'] == 2:
+            report['wanproj'] = dict(status='not_exported', reason='A standalone collinear spin-channel '
+                'model is not a complete two-channel VASP WANPROJ; both channel gauges are required')
+        else:
+            report['wanproj'] = write_wanproj(output/'WANPROJ', U=model['U'], kpoints=model['kpoints'],
+                bands_vasp_1based=model['bands_vasp_1based'], source_nb=report['source_num_bands'],
+                mesh=model['mesh'])
         if any(_digest(Path(path).read_bytes()) != digest for path, digest in hashes.items()):
             raise ValueError('Approximate model inputs changed during execution')
         report.update(status='accepted_approximate', accepted=True, sawf_ready=True, converged=True,
             physical_acceptance_status='accepted_approximate_single_particle_model',
-            input_sha256=hashes, output_sha256={path.name: _digest(path.read_bytes()) for path in output.glob('*.npz')})
+            input_sha256=hashes, output_sha256={path.name: _digest(path.read_bytes()) for path in output.iterdir()
+                if path.suffix == '.npz' or path.name == 'WANPROJ'})
     except Exception as error:
         report.update(error=str(error), accepted=False, sawf_ready=False, status='not_ready')
         if isinstance(getattr(error, 'report', None), dict):
             report['localisation'] = error.report
-        for name in ('model.npz', 'bands.npz', 'dft_bands.npz'):
+        for name in ('model.npz', 'bands.npz', 'dft_bands.npz', 'WANPROJ'):
             (output/name).unlink(missing_ok=True)
         raise
     finally:

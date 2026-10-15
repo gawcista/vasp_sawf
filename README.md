@@ -89,11 +89,13 @@ removed and no Hamiltonian or original input matrix is averaged.
 
 `sawf-run` automatically determines supported local targets as described
 below. Its default input prefix is `wannier90`, and its default symmetry
-directory is `symmetry`. It produces `model.npz`, `bands.npz`, and
+directory is `symmetry`. It produces `model.npz`, `bands.npz`, `WANPROJ`, and
 `summary.json` only after the final model fits the supplied Hamiltonian
 budget. A path in WIN is currently required by the approximate model/band
 exporter. The continuous bound uses the actual sampled axes of the mesh,
-with unsampled fractional coordinates fixed to zero.
+with unsampled fractional coordinates fixed to zero. WANPROJ preserves the
+saved final gauge and its accepted-approximate status; standalone collinear
+`ISPIN=2` channels record a skipped export because both spin channels are required.
 
 Reports distinguish `accepted_approximate` from strict source certification.
 The acceptance is for the stated numerical single-particle budget, not a
@@ -347,6 +349,14 @@ sawf-export-wanproj \
 ```
 
 The command verifies readiness/convergence, the saved model hash, the bound symmetry package and source hashes, original band mapping, k points and eigenvalues, complete mesh, finiteness and unitarity. It writes `WANPROJ` and `report.json` into a new directory. The writer preserves the final complex coefficients and all k-dependent cell phases; it does not conjugate, transpose, rotate, or recenter them.
+
+Accepted approximate models are also supported. For a model downloaded from
+another machine, add `--seed /local/path/to/wannier90` to locate the original
+WIN/AMN/MMN/EIG. The exporter reuses saved-model analysis to recheck the source
+decision, gauge, Fourier coefficients and continuous Hamiltonian budget, then
+checks the bound symmetry package. Neither localization nor WAVECAR extraction
+is repeated. The export report retains `accepted_approximate`, its numerical
+budgets and source limitations. Unaccepted diagnostic trials remain ineligible.
 
 The formatted [VASP WANPROJ](https://vasp.at/wiki/WANPROJ) header contains `ISPIN NKPTS NB_TOT NW`. For SOC here `ISPIN=1`; both spinor components belong to each Bloch state. Compact selected-band rows retain their original one-based VASP indices. `NB_TOT` is the total band count of the bound source calculation, not the compact dimension and not a band count borrowed from another run.
 

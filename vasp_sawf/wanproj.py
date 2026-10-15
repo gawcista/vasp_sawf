@@ -9,6 +9,7 @@ from numbers import Integral
 from pathlib import Path
 import re
 import sys
+import tempfile
 
 import numpy as np
 
@@ -133,13 +134,77 @@ def write_wanproj(path, *, U, kpoints, bands_vasp_1based, source_nb, mesh):
                 convention='Psi_W(k,w) = sum_n Psi_B(k,n) U(k,n,w); original complex U and all cell phases retained')
 
 
-def export_wanproj(model_dir, symmetry_dir, output_dir):
+def _export_approximate_wanproj(model_dir, symmetry_dir, output_dir, *, seed=None):
+    from .approximate import _base_report, _read_package
+    from .localize import _new_output
+    from .model_analysis import _read_model, analyze_model
+
+    source, model = _read_model(model_dir)
+    if source['spin']['source_ispin'] == 2:
+        raise ValueError('A standalone collinear channel cannot supply a complete two-channel VASP WANPROJ')
+    seed = Path(source['source_seed'] if seed is None else seed).resolve()
+    inputs = [model_dir/'model.npz', model_dir/'summary.json', symmetry_dir/'bloch.npz',
+              symmetry_dir/'report.json', *[Path(f'{seed}.{ext}') for ext in ('win', 'amn', 'mmn', 'eig')]]
+    hashes = {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in inputs}
+    original_package = Path(source['source_symmetry'])
+    for name in ('bloch.npz', 'report.json'):
+        if source.get('input_sha256', {}).get(str(original_package/name)) != hashes[str(symmetry_dir/name)]:
+            raise ValueError('Explicit symmetry package differs from the package bound to the saved model')
+    diagnostic, decision, details = _read_package(seed, symmetry_dir)
+    if diagnostic != model['diagnostic_utf8'].tobytes() or decision != source['acceptance']:
+        raise ValueError('Explicit symmetry package differs from the embedded diagnostic or model acceptance')
+    for key in ('source_hashes', 'source_num_bands', 'shape_nk_nb_nw', 'mesh', 'bands_vasp_1based', 'spin'):
+        if source[key] != details[key]:
+            raise ValueError(f'Model and bound symmetry package disagree on {key}')
+    with tempfile.TemporaryDirectory(prefix='sawf-wanproj-validation-') as temporary:
+        validation = analyze_model(model_dir, Path(temporary)/'analysis', seed=seed, points_per_segment=2)
+    if any(hashlib.sha256(Path(path).read_bytes()).hexdigest() != digest for path, digest in hashes.items()):
+        raise ValueError('WANPROJ export inputs changed during validation')
+    protected = list(inputs)
+    source_diagnostic = json.loads(diagnostic)
+    for key in ('wavecar', 'outcar'):
+        record = source_diagnostic.get(key, {})
+        if isinstance(record, dict) and isinstance(record.get('path'), str):
+            protected.append(Path(record['path']))
+    output = _new_output(output_dir, protected)
+    try:
+        wanproj = write_wanproj(output/'WANPROJ', U=model['U'], kpoints=model['kpoints'],
+            bands_vasp_1based=source['bands_vasp_1based'], source_nb=source['source_num_bands'], mesh=source['mesh'])
+        if any(hashlib.sha256(Path(path).read_bytes()).hexdigest() != digest for path, digest in hashes.items()):
+            raise ValueError('WANPROJ export inputs changed during writing')
+        report = _base_report('sawf-bridge-wanproj-v1')
+        report.update(status='accepted_approximate', source_model_status=source['status'], accepted=True,
+            sawf_ready=True, physical_acceptance_status='accepted_approximate_single_particle_model',
+            localization_repeated=False, acceptance=decision, source_seed=str(seed),
+            source_hashes=source['source_hashes'], source_num_bands=source['source_num_bands'],
+            mesh=source['mesh'], bands_vasp_1based=source['bands_vasp_1based'], spin=source['spin'],
+            model_sha256=hashes[str(model_dir/'model.npz')],
+            model_summary_sha256=hashes[str(model_dir/'summary.json')],
+            symmetry_package_sha256=hashes[str(symmetry_dir/'bloch.npz')], input_sha256=hashes,
+            source_diagnostic_sha256=source['source_diagnostic_sha256'],
+            validation_status=validation['status'],
+            hamiltonian_uniform_upper_ev=validation['hamiltonian_uniform_upper_ev'],
+            hamiltonian_budget_ev=validation['hamiltonian_budget_ev'], wanproj=wanproj)
+        with (output/'report.json').open('x', encoding='utf-8') as handle:
+            handle.write(json.dumps(report, indent=2, allow_nan=False)+'\n')
+    except Exception:
+        (output/'WANPROJ').unlink(missing_ok=True)
+        (output/'report.json').unlink(missing_ok=True)
+        raise
+    return report
+
+
+def export_wanproj(model_dir, symmetry_dir, output_dir, *, seed=None):
     """Export an already accepted model bound to its symmetry package without wavefunction I/O."""
     from .localize import _new_output, _read_bound_package, _validate_spin_metadata
 
     model_dir, symmetry_dir = [Path(p).resolve() for p in (model_dir, symmetry_dir)]
     summary_bytes = (model_dir / 'summary.json').read_bytes()
     summary = json.loads(summary_bytes)
+    if summary.get('schema') == 'sawf-bridge-approximate-model-v1':
+        return _export_approximate_wanproj(model_dir, symmetry_dir, output_dir, seed=seed)
+    if seed is not None:
+        raise ValueError('An explicit relocated seed is supported for accepted approximate models only')
     if (summary.get('schema') != 'sawf-bridge-model-v2' or summary.get('status') != 'ready'
             or any(summary.get(key) is not True for key in
                    ('converged', 'sawf_ready', 'numerical_checks_passed'))):
@@ -217,12 +282,13 @@ def export_wanproj(model_dir, symmetry_dir, output_dir):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--model', required=True, type=Path, help='Ready model directory containing model.npz and summary.json')
+    parser.add_argument('--model', required=True, type=Path, help='Accepted model directory containing model.npz and summary.json')
     parser.add_argument('--symmetry', required=True, type=Path, help='Bound symmetry package directory')
     parser.add_argument('--output', required=True, type=Path, help='New export directory outside all protected input directories')
+    parser.add_argument('--seed', type=Path, help='Relocated interface seed for accepted approximate model validation')
     args = parser.parse_args()
     try:
-        report = export_wanproj(args.model, args.symmetry, args.output)
+        report = export_wanproj(args.model, args.symmetry, args.output, seed=args.seed)
     except (ValueError, OSError, RuntimeError, KeyError) as error:
         print(f'WANPROJ export failed: {error}', file=sys.stderr)
         return 1
